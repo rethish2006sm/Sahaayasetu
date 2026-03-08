@@ -7,6 +7,8 @@ SahaayaSetu solves this by creating a centralized digital ecosystem that connect
 
 The platform uses AI-based prioritization to ensure that the most critical survivors receive help first.
 
+# MVP Link- https://sahaayasetu.onrender.com/
+
 📌 Problem Statement
 
 During disaster situations:
