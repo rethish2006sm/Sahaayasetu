@@ -2,7 +2,7 @@
 
 SahaayaSetu is an AI-powered disaster survivor coordination system designed specifically for Indian disaster management conditions.
 
-During disasters such as floods, earthquakes, or cyclones, rescue operations often suffer from poor coordination, delayed response, and inefficient resource allocation.
+During a disasters such as floods, earthquakes, or cyclones, rescue operations often suffer from poor coordination, delayed response, and inefficient resource allocation.
 SahaayaSetu solves this by creating a centralized digital ecosystem that connects survivors, NGOs, volunteers, donors, and administrators to coordinate rescue, relief, reunification, and recovery efforts.
 
 The platform uses AI-based prioritization to ensure that the most critical survivors receive help first.
