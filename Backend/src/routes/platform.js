@@ -2,10 +2,26 @@ import express from 'express'
 import { getDb } from '../db/mongo.js'
 import { authRequired, allowRoles } from '../middleware/auth.js'
 import { ensureCompAccount, ensureWalletAccount, getSummary, makeId, refreshWorkerAvailabilityByUserId, sanitizeAmount } from '../services/data.js'
-import { nowIso, toNumber } from '../utils/common.js'
+import { assignSurvivorToShelter, computeShelterStatus, createShelterRecord, updateShelterOccupancyRecord, updateShelterRecord, writeNgoOperationLog } from '../services/ngoResources.js'
+import { nowIso, toNumber, toOptionalNumber } from '../utils/common.js'
 
 const router = express.Router()
 router.use(authRequired)
+
+async function getNgoIdsForOwner(db, ownerUserId) {
+  const ngos = await db.collection('ngos').find(
+    { owner_user_id: ownerUserId },
+    { projection: { _id: 0, id: 1 } },
+  ).toArray()
+  return ngos.map((ngo) => ngo.id).filter(Boolean)
+}
+
+function ngoCanManageSurvivorRequest(survivor, ngoUserId, ngoIds = []) {
+  return (
+    survivor?.assigned_ngo_user_id === ngoUserId
+    || (survivor?.assigned_ngo_id && ngoIds.includes(survivor.assigned_ngo_id))
+  )
+}
 
 const list = (collection, sort = { created_at: -1 }) => async (_req, res) => {
   try { const db = getDb(); const data = await db.collection(collection).find({}, { projection: { _id: 0 } }).sort(sort).toArray(); res.json(data) }
@@ -37,18 +53,88 @@ router.post('/ngos', allowRoles('admin', 'ngo'), async (req, res) => {
   try { const db = getDb(); const b = req.body || {}; const doc = { id: makeId(), owner_user_id: b.owner_user_id || req.user.id, name: b.name || `${req.user.name} NGO`, location: b.location || null, phone: b.phone || null, lat: b.lat ?? null, lon: b.lon ?? null, resources: b.resources || '', created_at: nowIso(), updated_at: nowIso() }; await db.collection('ngos').insertOne(doc); res.status(201).json(doc) }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
+router.patch('/ngos/:id', allowRoles('admin', 'ngo'), async (req, res) => {
+  try {
+    const db = getDb()
+    const existing = await db.collection('ngos').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!existing) return res.status(404).json({ detail: 'NGO profile not found' })
+    if (req.user.role === 'ngo' && existing.owner_user_id !== req.user.id) {
+      return res.status(403).json({ detail: 'You can update only your NGO profile' })
+    }
+
+    const b = req.body || {}
+    const set = {
+      name: b.name || existing.name || `${req.user.name} NGO`,
+      location: b.location || null,
+      phone: b.phone || null,
+      lat: toOptionalNumber(b.lat),
+      lon: toOptionalNumber(b.lon),
+      resources: b.resources ?? existing.resources ?? '',
+      updated_at: nowIso(),
+    }
+
+    await db.collection('ngos').updateOne({ id: req.params.id }, { $set: set })
+    const updated = await db.collection('ngos').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    res.json(updated || {})
+  } catch (e) {
+    res.status(500).json({ detail: e.message })
+  }
+})
 router.delete('/ngos/:id', allowRoles('admin', 'ngo'), async (req, res) => { try { const db = getDb(); await db.collection('ngos').deleteOne({ id: req.params.id }); res.status(204).send() } catch (e) { res.status(500).json({ detail: e.message }) } })
 
-router.get('/shelters', list('shelters'))
+router.get('/shelters', async (_req, res) => {
+  try {
+    const db = getDb()
+    const data = await db.collection('shelters').find({}, { projection: { _id: 0 } }).sort({ updated_at: -1, created_at: -1 }).toArray()
+    res.json(data.map((item) => ({ ...item, ...computeShelterStatus(item) })))
+  } catch (e) {
+    res.status(500).json({ detail: e.message })
+  }
+})
 router.post('/shelters', allowRoles('admin', 'ngo'), async (req, res) => {
-  try { const db = getDb(); const b = req.body || {}; const doc = { id: makeId(), name: b.name || 'Shelter', location_text: b.location_text || b.location || null, capacity: toNumber(b.capacity, 0), occupancy: toNumber(b.occupied ?? b.occupancy, 0), contact_phone: b.contact_phone || null, created_at: nowIso(), updated_at: nowIso() }; await db.collection('shelters').insertOne(doc); res.status(201).json(doc) }
-  catch (e) { res.status(500).json({ detail: e.message }) }
+  try {
+    res.status(201).json(await createShelterRecord(req.body || {}, req.user))
+  } catch (e) {
+    res.status(400).json({ detail: e.message })
+  }
+})
+router.patch('/shelters/:id', allowRoles('admin', 'ngo'), async (req, res) => {
+  try {
+    res.json(await updateShelterRecord(req.params.id, req.body || {}, req.user))
+  } catch (e) {
+    const status = e.message === 'Shelter not found' ? 404 : 400
+    res.status(status).json({ detail: e.message })
+  }
 })
 router.patch('/shelters/:id/occupancy', allowRoles('admin', 'ngo'), async (req, res) => {
-  try { const db = getDb(); const b = req.body || {}; const set = { updated_at: nowIso() }; if (b.occupancy !== undefined || b.occupied !== undefined) set.occupancy = toNumber(b.occupancy ?? b.occupied, 0); if (b.capacity !== undefined) set.capacity = toNumber(b.capacity, 0); await db.collection('shelters').updateOne({ id: req.params.id }, { $set: set }); const f = await db.collection('shelters').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) }
-  catch (e) { res.status(500).json({ detail: e.message }) }
+  try {
+    res.json(await updateShelterOccupancyRecord(req.params.id, req.body || {}, req.user))
+  } catch (e) {
+    const status = e.message === 'Shelter not found' ? 404 : 400
+    res.status(status).json({ detail: e.message })
+  }
 })
-router.delete('/shelters/:id', allowRoles('admin', 'ngo'), async (req, res) => { try { const db = getDb(); await db.collection('shelters').deleteOne({ id: req.params.id }); res.status(204).send() } catch (e) { res.status(500).json({ detail: e.message }) } })
+router.delete('/shelters/:id', allowRoles('admin', 'ngo'), async (req, res) => {
+  try {
+    const db = getDb()
+    const existing = await db.collection('shelters').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    await db.collection('shelters').deleteOne({ id: req.params.id })
+    if (existing) {
+      await writeNgoOperationLog({
+        db,
+        action: 'shelter_deleted',
+        entity_type: 'shelter',
+        entity_id: existing.id,
+        title: existing.name,
+        user: req.user,
+        details: { location_text: existing.location_text || null },
+      })
+    }
+    res.status(204).send()
+  } catch (e) {
+    res.status(500).json({ detail: e.message })
+  }
+})
 
 router.get('/tasks', async (_req, res) => {
   try { const db = getDb(); const [tasks, workers] = await Promise.all([db.collection('tasks').find({}, { projection: { _id: 0 } }).sort({ created_at: -1 }).toArray(), db.collection('workers').find({}, { projection: { _id: 0 } }).toArray()]); const workerByUser = new Map(workers.filter((w) => w.linked_user_id).map((w) => [w.linked_user_id, w])); res.json(tasks.map((t) => ({ ...t, assigned_worker_name: workerByUser.get(t.assigned_worker_id)?.name || null }))) }
@@ -107,15 +193,95 @@ router.patch('/missing-persons/:id/verify-found', allowRoles('admin', 'ngo'), as
 })
 
 router.patch('/survivor-requests/:id/assign', allowRoles('admin', 'ngo'), async (req, res) => {
-  try { const db = getDb(); const workerId = req.body?.assigned_worker_id || null; await db.collection('survivors').updateOne({ id: req.params.id }, { $set: { assigned_worker_id: workerId, request_status: workerId ? 'assigned' : 'open', worker_response_status: workerId ? 'pending' : 'unassigned', updated_at: nowIso() } }); if (workerId) await refreshWorkerAvailabilityByUserId(workerId); const f = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) }
+  try {
+    const db = getDb()
+    const workerId = req.body?.assigned_worker_id || null
+    const existing = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!existing) return res.status(404).json({ detail: 'Survivor request not found' })
+
+    if (req.user.role === 'ngo') {
+      const ngoIds = await getNgoIdsForOwner(db, req.user.id)
+      if (!ngoCanManageSurvivorRequest(existing, req.user.id, ngoIds)) {
+        return res.status(403).json({ detail: 'This survivor request belongs to another NGO' })
+      }
+    }
+
+    await db.collection('survivors').updateOne(
+      { id: req.params.id },
+      {
+        $set: {
+          assigned_worker_id: workerId,
+          assigned_by_ngo_user_id: req.user.role === 'ngo' ? req.user.id : (existing.assigned_by_ngo_user_id || null),
+          request_status: workerId ? 'assigned' : 'open',
+          worker_response_status: workerId ? 'pending' : 'unassigned',
+          updated_at: nowIso(),
+        },
+      },
+    )
+
+    if (existing.assigned_worker_id && existing.assigned_worker_id !== workerId) {
+      await refreshWorkerAvailabilityByUserId(existing.assigned_worker_id)
+    }
+    if (workerId) await refreshWorkerAvailabilityByUserId(workerId)
+
+    const updated = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    res.json(updated || {})
+  }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
+router.patch('/survivor-requests/:id/shelter', allowRoles('admin', 'ngo'), async (req, res) => {
+  try {
+    res.json(await assignSurvivorToShelter(req.params.id, req.body?.shelter_id || null, req.user))
+  } catch (e) {
+    const status = e.message === 'Survivor request not found' ? 404 : 400
+    res.status(status).json({ detail: e.message })
+  }
+})
 router.patch('/survivor-requests/:id/worker-response', allowRoles('worker'), async (req, res) => {
-  try { const db = getDb(); const action = req.body?.action; if (!['accept', 'reject'].includes(action)) return res.status(400).json({ detail: 'action must be accept or reject' }); const set = action === 'accept' ? { request_status: 'accepted_by_worker', worker_response_status: 'accepted', updated_at: nowIso() } : { request_status: 'rejection_pending_ngo', worker_response_status: 'rejected_by_worker', updated_at: nowIso() }; await db.collection('survivors').updateOne({ id: req.params.id }, { $set: set }); const f = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) }
+  try {
+    const db = getDb()
+    const action = req.body?.action
+    if (!['accept', 'reject'].includes(action)) return res.status(400).json({ detail: 'action must be accept or reject' })
+
+    const existing = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!existing) return res.status(404).json({ detail: 'Survivor request not found' })
+    if (existing.assigned_worker_id !== req.user.id) {
+      return res.status(403).json({ detail: 'This survivor request is not assigned to you' })
+    }
+
+    const set = action === 'accept'
+      ? { request_status: 'accepted_by_worker', worker_response_status: 'accepted', updated_at: nowIso() }
+      : { request_status: 'rejection_pending_ngo', worker_response_status: 'rejected_by_worker', updated_at: nowIso() }
+
+    await db.collection('survivors').updateOne({ id: req.params.id }, { $set: set })
+    const updated = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    res.json(updated || {})
+  }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
 router.patch('/survivor-requests/:id/confirm-rejection', allowRoles('admin', 'ngo'), async (req, res) => {
-  try { const db = getDb(); const decision = req.body?.decision; const old = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } }); const set = decision === 'confirm_reject' ? { request_status: 'open', worker_response_status: 'rejection_confirmed', assigned_worker_id: null, updated_at: nowIso() } : { request_status: 'assigned', worker_response_status: 'assignment_kept', updated_at: nowIso() }; await db.collection('survivors').updateOne({ id: req.params.id }, { $set: set }); if (old?.assigned_worker_id) await refreshWorkerAvailabilityByUserId(old.assigned_worker_id); const f = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) }
+  try {
+    const db = getDb()
+    const decision = req.body?.decision
+    const existing = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!existing) return res.status(404).json({ detail: 'Survivor request not found' })
+
+    if (req.user.role === 'ngo') {
+      const ngoIds = await getNgoIdsForOwner(db, req.user.id)
+      if (!ngoCanManageSurvivorRequest(existing, req.user.id, ngoIds)) {
+        return res.status(403).json({ detail: 'This survivor request belongs to another NGO' })
+      }
+    }
+
+    const set = decision === 'confirm_reject'
+      ? { request_status: 'open', worker_response_status: 'rejection_confirmed', assigned_worker_id: null, updated_at: nowIso() }
+      : { request_status: 'assigned', worker_response_status: 'assignment_kept', updated_at: nowIso() }
+
+    await db.collection('survivors').updateOne({ id: req.params.id }, { $set: set })
+    if (existing.assigned_worker_id) await refreshWorkerAvailabilityByUserId(existing.assigned_worker_id)
+    const updated = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    res.json(updated || {})
+  }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
 async function walletTransfer(db, fromUserId, toUserId, amount, note = null, txType = 'transfer') {

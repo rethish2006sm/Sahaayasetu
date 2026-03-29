@@ -9,10 +9,13 @@ import survivorRoutes from './src/routes/survivors.js'
 import platformRoutes from './src/routes/platform.js'
 import chatRoutes from './src/routes/chat.js'
 import homeSettingsRoutes from './src/routes/homeSettings.js'
+import ngoResourcesRoutes from './src/routes/ngoResources.js'
+import { seedNgoResourceData } from './src/services/ngoResources.js'
 
 async function start() {
   await connectMongo()
   await seedInitialData()
+  await seedNgoResourceData()
 
   const app = express()
   app.use(cors())
@@ -23,6 +26,7 @@ async function start() {
   app.use('/v1/auth', authRoutes)
   app.use('/v1/survivors', survivorRoutes)
   app.use('/v1/platform', platformRoutes)
+  app.use('/v1/platform/ngo-resources', ngoResourcesRoutes)
   app.use('/v1/chat', chatRoutes)
   app.use('/v1/home-settings', homeSettingsRoutes)
 

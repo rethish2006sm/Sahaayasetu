@@ -21,16 +21,16 @@ const roleContent = {
   },
   ngo: {
     title: 'NGO Operations Desk',
-    desc: 'Coordinate field activity and create worker accounts.',
+    desc: 'Coordinate field activity, manage smart resources, and automate shelter operations.',
     action: '/ngo',
     actionLabel: 'Open NGO Portal',
-    capabilities: ['Create worker accounts', 'Raise tasks and assign operations', 'Publish NGO contact/location profile'],
+    capabilities: ['Create employee accounts', 'Run category-based resource operations', 'Automate shelter occupancy and alerts'],
   },
   worker: {
-    title: 'Worker Task Board',
+    title: 'Employee Task Board',
     desc: 'Track assigned tasks and update progress from field.',
     action: '/worker',
-    actionLabel: 'Open Worker Board',
+    actionLabel: 'Open Employee Board',
     capabilities: ['View open tasks', 'Move task status to in progress/completed', 'Coordinate with NGO operations'],
   },
   donor: {
@@ -41,6 +41,8 @@ const roleContent = {
     capabilities: ['Submit donations', 'View high-priority needs', 'Track recent contribution records'],
   },
 }
+
+const roleLabel = (role) => (role === 'worker' ? 'employee' : role)
 
 export default function DashboardPage() {
   const { user, token, refreshUser } = useAuth()
@@ -165,7 +167,7 @@ export default function DashboardPage() {
               <p><span className="font-semibold">Name:</span> {user?.name}</p>
               <p><span className="font-semibold">Email:</span> {user?.email}</p>
               <p><span className="font-semibold">Phone:</span> {user?.phone || 'Not provided'}</p>
-              <p><span className="font-semibold">Role:</span> {user?.role}</p>
+              <p><span className="font-semibold">Role:</span> {roleLabel(user?.role)}</p>
             </div>
             <button
               type="button"
@@ -232,6 +234,15 @@ export default function DashboardPage() {
           <SummaryCard label="Active Alerts" value={summary.alerts} />
           <SummaryCard label="Donations" value={summary.donations} />
         </section>
+
+        {user?.role === 'ngo' ? (
+          <section className="mt-4 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <SummaryCard label="Resource Records" value={summary.resources} />
+            <SummaryCard label="Active Shelters" value={summary.active_shelters} />
+            <SummaryCard label="Beds Available" value={summary.available_beds} />
+            <SummaryCard label="Volunteers Ready" value={summary.available_volunteers} />
+          </section>
+        ) : null}
 
         <section className="mt-4 grid md:grid-cols-2 gap-4">
           <article className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">

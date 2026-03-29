@@ -197,7 +197,7 @@ export default function SurvivorPage() {
     setActionLoading('Submitting help request...')
     setMsg('')
     try {
-      await apiRequest('/v1/survivors', {
+      const createdRequest = await apiRequest('/v1/survivors', {
         method: 'POST',
         token,
           body: {
@@ -210,7 +210,11 @@ export default function SurvivorPage() {
               location_lon: requestForm.location_lon ? Number(requestForm.location_lon) : null,
             },
           })
-      setMsg('Help request submitted successfully.')
+      setMsg(
+        createdRequest?.assigned_ngo_name
+          ? `Help request sent to matched NGO: ${createdRequest.assigned_ngo_name}.`
+          : 'Help request submitted. No NGO address matched this request yet.',
+      )
       setRequestForm((prev) => ({
         ...prev,
         phone: '',
@@ -636,7 +640,7 @@ export default function SurvivorPage() {
         {activeTab === 'home' ? (
           <section className="mt-4 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
             <h2 className="text-xl font-bold text-blue-900">Your Help Request</h2>
-            <p className="text-sm text-slate-600 mt-1">Submit your current need to rescue teams and nearby NGOs.</p>
+            <p className="text-sm text-slate-600 mt-1">Submit your current need and we will route it using the address you enter.</p>
             <form onSubmit={submitHelpRequest} className="mt-3 grid md:grid-cols-2 gap-3">
               <input className="border rounded-lg px-3 py-2" placeholder="Name" value={requestForm.name} onChange={(e) => setRequestForm((p) => ({ ...p, name: e.target.value }))} required />
               <input className="border rounded-lg px-3 py-2" type="number" min="0" max="120" placeholder="Age" value={requestForm.age} onChange={(e) => setRequestForm((p) => ({ ...p, age: e.target.value }))} required />
@@ -648,8 +652,6 @@ export default function SurvivorPage() {
               </select>
               <textarea className="md:col-span-2 border rounded-lg px-3 py-2" placeholder="Describe help needed" value={requestForm.voice_transcript} onChange={(e) => setRequestForm((p) => ({ ...p, voice_transcript: e.target.value }))} />
               <input className="md:col-span-2 border rounded-lg px-3 py-2" placeholder="Exact location / address (required)" value={requestForm.location_text} onChange={(e) => setRequestForm((p) => ({ ...p, location_text: e.target.value }))} required />
-              <input className="border rounded-lg px-3 py-2" placeholder="Latitude (optional)" value={requestForm.location_lat} onChange={(e) => setRequestForm((p) => ({ ...p, location_lat: e.target.value }))} />
-              <input className="border rounded-lg px-3 py-2" placeholder="Longitude (optional)" value={requestForm.location_lon} onChange={(e) => setRequestForm((p) => ({ ...p, location_lon: e.target.value }))} />
               <label className="text-sm flex items-center gap-2">
                 <input type="checkbox" checked={requestForm.needs_medical} onChange={(e) => setRequestForm((p) => ({ ...p, needs_medical: e.target.checked }))} />
                 Need urgent medical support
@@ -663,7 +665,7 @@ export default function SurvivorPage() {
         {activeTab === 'requests' ? (
           <section className="mt-4 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
             <h2 className="text-xl font-bold text-blue-900">My Requests Tracker</h2>
-            <p className="text-sm text-slate-600 mt-1">Track your request status, assigned worker, and progress updates.</p>
+            <p className="text-sm text-slate-600 mt-1">Track your request status, assigned employee, and progress updates.</p>
             <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
               <div className="rounded border bg-slate-50 p-2"><p className="text-slate-500">Total</p><p className="text-lg font-bold text-slate-900">{myRequestSummary.total}</p></div>
               <div className="rounded border bg-blue-50 p-2"><p className="text-blue-700">Open</p><p className="text-lg font-bold text-blue-900">{myRequestSummary.open}</p></div>
@@ -675,7 +677,7 @@ export default function SurvivorPage() {
             <div className="mt-3 grid gap-2 text-sm md:grid-cols-3">
               <input
                 className="rounded-lg border px-3 py-2 md:col-span-2"
-                placeholder="Search by need/location/worker/request id..."
+                placeholder="Search by need/location/employee/request id..."
                 value={myRequestQuery}
                 onChange={(e) => setMyRequestQuery(e.target.value)}
               />
@@ -683,7 +685,7 @@ export default function SurvivorPage() {
                 <option value="all">All Status</option>
                 <option value="open">Open</option>
                 <option value="assigned">Assigned</option>
-                <option value="accepted_by_worker">Accepted By Worker</option>
+                <option value="accepted_by_worker">Accepted By Employee</option>
                 <option value="rejection_pending_ngo">Rejection Pending NGO</option>
                 <option value="in_progress">In Progress</option>
                 <option value="completed">Completed</option>
@@ -694,10 +696,11 @@ export default function SurvivorPage() {
                 <article key={req.id} className="border rounded-lg p-3 bg-slate-50">
                   <p><span className="font-semibold">Need:</span> {req.voice_transcript || req.name}</p>
                   <p><span className="font-semibold">Status:</span> {req.request_status || 'open'}</p>
+                  <p><span className="font-semibold">Assigned NGO:</span> {req.assigned_ngo_name || 'Awaiting NGO address match'}</p>
                   <p><span className="font-semibold">Location:</span> {req.location_text || '-'}</p>
-                  <p><span className="font-semibold">Worker:</span> {req.assigned_worker_name || 'Not assigned yet'}</p>
-                  <p><span className="font-semibold">Worker Phone:</span> {req.assigned_worker_phone || '-'}</p>
-                  <p><span className="font-semibold">Worker Skills:</span> {(req.assigned_worker_skills || []).join(', ') || '-'}</p>
+                  <p><span className="font-semibold">Employee:</span> {req.assigned_worker_name || 'Not assigned yet'}</p>
+                  <p><span className="font-semibold">Employee Phone:</span> {req.assigned_worker_phone || '-'}</p>
+                  <p><span className="font-semibold">Employee Skills:</span> {(req.assigned_worker_skills || []).join(', ') || '-'}</p>
                   <p><span className="font-semibold">Request ID:</span> {req.id}</p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {req.request_status === 'accepted_by_worker' ? (

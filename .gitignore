@@ -8,3 +8,4 @@
 # OS/editor
 .DS_Store
 *.log
+.env

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import RoleNav from '../components/RoleNav'
+import NgoResourceControl from '../components/NgoResourceControl'
 import { useAuth } from '../context/AuthContext'
 import { apiRequest } from '../lib/api'
 
 const tabs = [
-  ['inventory', 'Inventory'],
+  ['inventory', 'Resource Ops'],
   ['volunteers', 'Volunteers'],
   ['compensation', 'Compensation'],
   ['tasks', 'Tasks'],
@@ -23,8 +24,8 @@ export default function NgoPage() {
   const [actionLoading, setActionLoading] = useState('')
   const [lang, setLang] = useState('en')
 
-  const [inventory, setInventory] = useState([])
-  const [insights, setInsights] = useState({ shortage_alerts: [], duplication_flags: [] })
+  const [_inventory, setInventory] = useState([])
+  const [_insights, setInsights] = useState({ shortage_alerts: [], duplication_flags: [] })
   const [workers, setWorkers] = useState([])
   const [tasks, setTasks] = useState([])
   const [alerts, setAlerts] = useState([])
@@ -59,9 +60,10 @@ export default function NgoPage() {
   const [selectedMissing, setSelectedMissing] = useState(null)
   const [selectedWorkerId, setSelectedWorkerId] = useState('')
   const [survivorAssignDrafts, setSurvivorAssignDrafts] = useState({})
+  const [ngoFormDirty, setNgoFormDirty] = useState(false)
   const [walletMe, setWalletMe] = useState(null)
   const [walletSharePhone, setWalletSharePhone] = useState('')
-  const [walletDirectory, setWalletDirectory] = useState([])
+  const [_walletDirectory, setWalletDirectory] = useState([])
   const [walletTransfers, setWalletTransfers] = useState([])
   const [walletTransferForm, setWalletTransferForm] = useState({
     to_user_id: '',
@@ -91,7 +93,7 @@ export default function NgoPage() {
     note: '',
   })
 
-  const [invForm, setInvForm] = useState({
+  const [_invForm, _setInvForm] = useState({
     resource_type: '',
     quantity: 0,
     location: '',
@@ -275,6 +277,32 @@ export default function NgoPage() {
     return () => clearTimeout(timer)
   }, [msg])
 
+  const currentNgoProfile = useMemo(
+    () => ngos.find((item) => item.owner_user_id === user?.id) || null,
+    [ngos, user?.id],
+  )
+  const hasRoutingAddress = useMemo(
+    () => Boolean(String(currentNgoProfile?.location || '').trim()),
+    [currentNgoProfile?.location],
+  )
+
+  useEffect(() => {
+    if (ngoFormDirty) return
+    setNgoForm({
+      name: currentNgoProfile?.name || user?.name || '',
+      contact: currentNgoProfile?.phone || '',
+      location: currentNgoProfile?.location || '',
+      specialization: currentNgoProfile?.resources || '',
+      lat: currentNgoProfile?.lat ?? '',
+      lon: currentNgoProfile?.lon ?? '',
+    })
+  }, [currentNgoProfile, user?.name, ngoFormDirty])
+
+  const updateNgoFormField = (key, value) => {
+    setNgoFormDirty(true)
+    setNgoForm((prev) => ({ ...prev, [key]: value }))
+  }
+
   const submit = async (path, body, ok) => {
     if (actionLoading) return false
     setActionLoading('Saving...')
@@ -305,6 +333,48 @@ export default function NgoPage() {
     }
   }
 
+  const saveNgoProfile = async (e) => {
+    e.preventDefault()
+    if (actionLoading) return
+    if (!String(ngoForm.location || '').trim()) {
+      setMsg('Please provide the NGO address/area for address-based routing.')
+      return
+    }
+    setActionLoading('Saving NGO profile...')
+    try {
+      const body = {
+        name: ngoForm.name,
+        phone: ngoForm.contact || null,
+        location: ngoForm.location || null,
+        resources: ngoForm.specialization || '',
+        lat: ngoForm.lat === '' ? null : Number(ngoForm.lat),
+        lon: ngoForm.lon === '' ? null : Number(ngoForm.lon),
+      }
+
+      if (currentNgoProfile?.id) {
+        await apiRequest(`/v1/platform/ngos/${currentNgoProfile.id}`, {
+          method: 'PATCH',
+          token,
+          body,
+        })
+      } else {
+        await apiRequest('/v1/platform/ngos', {
+          method: 'POST',
+          token,
+          body,
+        })
+      }
+
+      setMsg('NGO profile updated. Address-based routing will use this NGO address.')
+      await loadData()
+      setNgoFormDirty(false)
+    } catch (err) {
+      setMsg(err.message)
+    } finally {
+      setActionLoading('')
+    }
+  }
+
 
   const updateShelterOccupancy = async (shelterId, payload, okMessage) => {
     if (actionLoading) return
@@ -327,14 +397,14 @@ export default function NgoPage() {
   const assignWorkerToSurvivor = async (survivorId) => {
     if (actionLoading) return
     const assigned_worker_id = survivorAssignDrafts[survivorId] || null
-    setActionLoading('Assigning worker...')
+    setActionLoading('Assigning employee...')
     try {
       await apiRequest(`/v1/platform/survivor-requests/${survivorId}/assign`, {
         method: 'PATCH',
         token,
         body: { assigned_worker_id },
       })
-      setMsg(assigned_worker_id ? 'Worker assigned to survivor request successfully.' : 'Worker unassigned successfully.')
+      setMsg(assigned_worker_id ? 'Employee assigned to survivor request successfully.' : 'Employee unassigned successfully.')
       await loadData()
     } catch (err) {
       setMsg(err.message)
@@ -352,7 +422,7 @@ export default function NgoPage() {
         token,
         body: { decision },
       })
-      setMsg(decision === 'confirm_reject' ? 'Rejection confirmed. Request moved back to open queue.' : 'Assignment kept with worker.')
+      setMsg(decision === 'confirm_reject' ? 'Rejection confirmed. Request moved back to open queue.' : 'Assignment kept with employee.')
       await loadData()
     } catch (err) {
       setMsg(err.message)
@@ -402,7 +472,7 @@ export default function NgoPage() {
     }
   }
 
-  const sendWalletBySelection = async (e) => {
+  const _sendWalletBySelection = async (e) => {
     e.preventDefault()
     if (actionLoading) return
     setActionLoading('Sending wallet transfer...')
@@ -426,7 +496,7 @@ export default function NgoPage() {
     }
   }
 
-  const sendWalletByPhone = async (e) => {
+  const _sendWalletByPhone = async (e) => {
     e.preventDefault()
     if (actionLoading) return
     setActionLoading('Sending mobile-number wallet transfer...')
@@ -450,7 +520,7 @@ export default function NgoPage() {
     }
   }
 
-  const payWithCompensation = async (e) => {
+  const _payWithCompensation = async (e) => {
     e.preventDefault()
     if (actionLoading) return
     setActionLoading('Processing compensation payment...')
@@ -779,12 +849,58 @@ export default function NgoPage() {
               <p className="text-sm text-slate-600">Demo-ready workflow for NGO role.</p>
             </div>
             <div className="flex gap-2">
-              <select value={lang} onChange={(e) => { setLang(e.target.value); setAlertForm((p) => ({ ...p, language: e.target.value })) }} className="border rounded-lg px-3 py-2 text-sm">
-                <option value="en">English</option><option value="hi">Hindi</option><option value="mr">Marathi</option><option value="ta">Tamil</option>
-              </select>
+              
               <button onClick={() => loadData({ notify: true })} className="border rounded-lg px-3 py-2 text-sm">Refresh</button>
             </div>
           </div>
+        </section>
+
+        <section className="mt-4 rounded-xl border bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold text-blue-900">NGO Routing Profile</h2>
+              <p className="text-sm text-slate-600">Survivor requests are matched using this NGO address.</p>
+            </div>
+            <div className={`rounded-lg border px-3 py-2 text-xs ${hasRoutingAddress ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+              {hasRoutingAddress ? 'Routing address saved' : 'Add NGO address to enable address-based routing'}
+            </div>
+          </div>
+
+          <form onSubmit={saveNgoProfile} className="mt-3 grid gap-3 md:grid-cols-2 text-sm">
+            <input
+              className="rounded border px-3 py-2"
+              placeholder="NGO name"
+              value={ngoForm.name}
+              onChange={(e) => updateNgoFormField('name', e.target.value)}
+              required
+            />
+            <input
+              className="rounded border px-3 py-2"
+              placeholder="Contact phone"
+              value={ngoForm.contact}
+              onChange={(e) => updateNgoFormField('contact', e.target.value)}
+            />
+            <input
+              className="md:col-span-2 rounded border px-3 py-2"
+              placeholder="NGO address / area"
+              value={ngoForm.location}
+              onChange={(e) => updateNgoFormField('location', e.target.value)}
+              required
+            />
+            <textarea
+              className="md:col-span-2 rounded border px-3 py-2"
+              placeholder="Resources / specialization"
+              value={ngoForm.specialization}
+              onChange={(e) => updateNgoFormField('specialization', e.target.value)}
+            />
+            <button
+              type="submit"
+              disabled={Boolean(actionLoading)}
+              className="md:col-span-2 rounded-lg bg-blue-900 px-4 py-2 text-white disabled:opacity-60"
+            >
+              {actionLoading ? 'Please wait...' : 'Save NGO Routing Profile'}
+            </button>
+          </form>
         </section>
 
         <section className="sticky top-36 z-30 mt-4 rounded-xl border bg-white/95 p-3 shadow-sm backdrop-blur">
@@ -937,47 +1053,7 @@ export default function NgoPage() {
           </section>
         ) : null}
 
-        {tab === 'inventory' ? <section className="mt-4 grid lg:grid-cols-3 gap-4">
-          <article className="lg:col-span-2 bg-white rounded-xl border p-4 shadow-sm">
-            <h2 className="font-bold text-blue-900">Resource Inventory</h2>
-            <form onSubmit={async (e) => { e.preventDefault(); const ok = await submit('/v1/platform/inventory', { ...invForm, quantity: Number(invForm.quantity), estimated_need: Number(invForm.estimated_need) }, 'Inventory saved successfully.'); if (ok) setInvForm((p) => ({ ...p, resource_type: '', quantity: 0, location: '', expiration_date: '' })) }} className="mt-2 grid md:grid-cols-2 gap-2 text-sm">
-              <input className="border rounded-lg px-3 py-2" placeholder="Resource type" value={invForm.resource_type} onChange={(e) => setInvForm((p) => ({ ...p, resource_type: e.target.value }))} required />
-              <input className="border rounded-lg px-3 py-2" type="number" placeholder="Quantity" value={invForm.quantity} onChange={(e) => setInvForm((p) => ({ ...p, quantity: e.target.value }))} required />
-              <input className="border rounded-lg px-3 py-2" placeholder="Location" value={invForm.location} onChange={(e) => setInvForm((p) => ({ ...p, location: e.target.value }))} required />
-              <input className="border rounded-lg px-3 py-2" type="number" placeholder="Estimated need" value={invForm.estimated_need} onChange={(e) => setInvForm((p) => ({ ...p, estimated_need: e.target.value }))} required />
-              <input className="border rounded-lg px-3 py-2" type="date" value={invForm.expiration_date} onChange={(e) => setInvForm((p) => ({ ...p, expiration_date: e.target.value }))} />
-              <input className="border rounded-lg px-3 py-2" placeholder="NGO name" value={invForm.ngo_name} onChange={(e) => setInvForm((p) => ({ ...p, ngo_name: e.target.value }))} />
-              <button disabled={Boolean(actionLoading)} className="md:col-span-2 rounded-lg bg-blue-900 text-white px-4 py-2 disabled:opacity-60">{actionLoading ? 'Please wait...' : 'Save'}</button>
-            </form>
-            <div className="mt-3 text-sm grid md:grid-cols-2 gap-2">
-              <div className="rounded border bg-slate-50 p-2"><p className="font-semibold text-red-700">Shortage Alerts</p>{insights.shortage_alerts.length ? insights.shortage_alerts.map((s, i) => <p key={i}>{s.resource_type} @ {s.location}</p>) : <p className="text-slate-500">None</p>}</div>
-              <div className="rounded border bg-slate-50 p-2"><p className="font-semibold text-amber-700">Duplication Flags</p>{insights.duplication_flags.length ? insights.duplication_flags.map((d, i) => <p key={i}>{d.resource_type} @ {d.location}</p>) : <p className="text-slate-500">None</p>}</div>
-            </div>
-            <div className="mt-3 space-y-2 text-sm max-h-52 overflow-auto">
-              {inventory.map((item) => <div key={item.id} className="rounded border bg-white p-2 flex items-center justify-between gap-2"><p>{item.resource_type} - {item.quantity} @ {item.location}</p><button onClick={() => remove(`/v1/platform/inventory/${item.id}`, 'Inventory deleted successfully.')} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700">Delete</button></div>)}
-              {inventory.length === 0 ? <p className="text-slate-500">No inventory records yet.</p> : null}
-            </div>
-          </article>
-
-          <article className="bg-white rounded-xl border p-4 shadow-sm">
-            <h3 className="font-semibold text-blue-900">NGO Profile (for Survivor Help Centre)</h3>
-            <form onSubmit={async (e) => { e.preventDefault(); await submit('/v1/platform/ngos', { ...ngoForm, lat: Number(ngoForm.lat), lon: Number(ngoForm.lon) }, 'NGO profile saved successfully.') }} className="mt-2 space-y-2 text-sm">
-              <input className="w-full border rounded-lg px-3 py-2" placeholder="NGO name" value={ngoForm.name} onChange={(e) => setNgoForm((p) => ({ ...p, name: e.target.value }))} required />
-              <input className="w-full border rounded-lg px-3 py-2" placeholder="Contact" value={ngoForm.contact} onChange={(e) => setNgoForm((p) => ({ ...p, contact: e.target.value }))} />
-              <input className="w-full border rounded-lg px-3 py-2" placeholder="Location" value={ngoForm.location} onChange={(e) => setNgoForm((p) => ({ ...p, location: e.target.value }))} />
-              <input className="w-full border rounded-lg px-3 py-2" placeholder="Specialization" value={ngoForm.specialization} onChange={(e) => setNgoForm((p) => ({ ...p, specialization: e.target.value }))} />
-              <div className="grid grid-cols-2 gap-2">
-                <input className="border rounded-lg px-3 py-2" placeholder="Lat" value={ngoForm.lat} onChange={(e) => setNgoForm((p) => ({ ...p, lat: e.target.value }))} required />
-                <input className="border rounded-lg px-3 py-2" placeholder="Lon" value={ngoForm.lon} onChange={(e) => setNgoForm((p) => ({ ...p, lon: e.target.value }))} required />
-              </div>
-              <button disabled={Boolean(actionLoading)} className="w-full rounded-lg bg-emerald-700 text-white px-4 py-2 disabled:opacity-60">{actionLoading ? 'Please wait...' : 'Save NGO'}</button>
-            </form>
-            <div className="mt-3 space-y-2 text-sm max-h-40 overflow-auto">
-              {ngos.map((ngo) => <div key={ngo.id} className="rounded border bg-white p-2 flex items-center justify-between gap-2"><p>{ngo.name} - {ngo.location || 'No location'}</p><button onClick={() => remove(`/v1/platform/ngos/${ngo.id}`, 'NGO profile deleted successfully.')} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700">Delete</button></div>)}
-              {ngos.length === 0 ? <p className="text-slate-500">No NGO profiles yet.</p> : null}
-            </div>
-          </article>
-        </section> : null}
+        {tab === 'inventory' ? <NgoResourceControl token={token} user={user} onToast={setMsg} /> : null}
 
         {tab === 'volunteers' ? <section className="mt-4 bg-white rounded-xl border p-4 shadow-sm">
           <h2 className="font-bold text-blue-900">Volunteers</h2>
@@ -985,10 +1061,10 @@ export default function NgoPage() {
             <div className="rounded border bg-emerald-50 p-2"><p className="text-emerald-700">Active (Available)</p><p className="text-lg font-bold text-emerald-900">{workerStatusSummary.available}</p></div>
             <div className="rounded border bg-amber-50 p-2"><p className="text-amber-700">Busy (On-Task)</p><p className="text-lg font-bold text-amber-900">{workerStatusSummary.onTask}</p></div>
             <div className="rounded border bg-slate-100 p-2"><p className="text-slate-700">Inactive</p><p className="text-lg font-bold text-slate-900">{workerStatusSummary.unavailable}</p></div>
-            <div className="rounded border bg-blue-50 p-2"><p className="text-blue-700">Total Workers</p><p className="text-lg font-bold text-blue-900">{workerStatusSummary.total}</p></div>
+            <div className="rounded border bg-blue-50 p-2"><p className="text-blue-700">Total Employees</p><p className="text-lg font-bold text-blue-900">{workerStatusSummary.total}</p></div>
           </div>
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-2">
-            <input className="border rounded-lg px-3 py-2" placeholder="Search worker name/phone/skills..." value={workerQuery} onChange={(e) => setWorkerQuery(e.target.value)} />
+            <input className="border rounded-lg px-3 py-2" placeholder="Search employee name/phone/skills..." value={workerQuery} onChange={(e) => setWorkerQuery(e.target.value)} />
             <select className="border rounded-lg px-3 py-2" value={workerStatusFilter} onChange={(e) => setWorkerStatusFilter(e.target.value)}>
               <option value="all">All Status</option>
               <option value="Available">Available (Active)</option>
@@ -1029,7 +1105,7 @@ export default function NgoPage() {
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
             <input
               className="rounded-lg border px-3 py-2 md:col-span-2"
-              placeholder="Search by title, description, worker, status..."
+              placeholder="Search by title, description, employee, status..."
               value={taskQuery}
               onChange={(e) => setTaskQuery(e.target.value)}
             />
@@ -1056,7 +1132,7 @@ export default function NgoPage() {
             <p className="font-semibold">Task Board ({filteredTasks.length})</p>
             {filteredTasks.map((t) => {
               const taskWorker = workerByAssigneeId.get(t.assigned_worker_id)
-              return <div key={t.id} className="mt-2 rounded border bg-white p-2"><div className="flex items-center justify-between gap-2"><p>{t.title}</p><div className="flex items-center gap-2"><button onClick={() => remove(`/v1/platform/tasks/${t.id}`, 'Task deleted successfully.')} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700">Delete</button></div></div><p className="text-xs text-slate-600">Status: {t.status}</p><p className="text-xs text-slate-600">Assigned: {t.assigned_worker_name || 'Unassigned'}</p><p className="text-xs text-slate-600">Worker Availability: {taskWorker?.availability_status || '-'}</p><p className="text-xs text-slate-600">Worker Contact: {taskWorker?.phone || '-'}</p><p className="mt-1 text-xs text-slate-500">Task status is updated only by the assigned worker.</p></div>
+              return <div key={t.id} className="mt-2 rounded border bg-white p-2"><div className="flex items-center justify-between gap-2"><p>{t.title}</p><div className="flex items-center gap-2"><button onClick={() => remove(`/v1/platform/tasks/${t.id}`, 'Task deleted successfully.')} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700">Delete</button></div></div><p className="text-xs text-slate-600">Status: {t.status}</p><p className="text-xs text-slate-600">Assigned: {t.assigned_worker_name || 'Unassigned'}</p><p className="text-xs text-slate-600">Employee Availability: {taskWorker?.availability_status || '-'}</p><p className="text-xs text-slate-600">Employee Contact: {taskWorker?.phone || '-'}</p><p className="mt-1 text-xs text-slate-500">Task status is updated only by the assigned employee.</p></div>
             })}
             {filteredTasks.length === 0 ? <p className="text-slate-500 mt-2">No tasks match this filter.</p> : null}
           </div>
@@ -1096,7 +1172,7 @@ export default function NgoPage() {
                     <div className="mt-1 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
                       <p><span className="font-semibold">Priority:</span> {t.priority || '-'}</p>
                       <p><span className="font-semibold">Assigned:</span> {t.assigned_worker_name || 'Unassigned'}</p>
-                      <p><span className="font-semibold">Worker Availability:</span> {taskWorker?.availability_status || '-'}</p>
+                      <p><span className="font-semibold">Employee Availability:</span> {taskWorker?.availability_status || '-'}</p>
                       <p><span className="font-semibold">Created:</span> {formatWhen(t.created_at)}</p>
                     </div>
                   </article>
@@ -1131,7 +1207,7 @@ export default function NgoPage() {
                 <option value="all">All Status</option>
                 <option value="open">Open</option>
                 <option value="assigned">Assigned</option>
-                <option value="accepted_by_worker">Accepted By Worker</option>
+                <option value="accepted_by_worker">Accepted By Employee</option>
                 <option value="rejection_pending_ngo">Rejection Pending NGO</option>
                 <option value="in_progress">In Progress</option>
                 <option value="completed">Completed</option>
@@ -1175,11 +1251,11 @@ export default function NgoPage() {
                       <p><span className="font-semibold">Latitude:</span> {s.location_lat ?? '-'}</p>
                       <p><span className="font-semibold">Longitude:</span> {s.location_lon ?? '-'}</p>
                       <p><span className="font-semibold">Request Status:</span> {s.request_status || 'open'}</p>
-                      <p><span className="font-semibold">Worker Response:</span> {s.worker_response_status || '-'}</p>
+                      <p><span className="font-semibold">Employee Response:</span> {s.worker_response_status || '-'}</p>
                       <p><span className="font-semibold">Response Note:</span> {s.worker_response_note || '-'}</p>
-                      <p><span className="font-semibold">Assigned Worker:</span> {s.assigned_worker_name || 'Unassigned'}</p>
-                      <p><span className="font-semibold">Worker Availability:</span> {s.assigned_worker_status || '-'}</p>
-                      <p><span className="font-semibold">Worker Contact:</span> {s.assigned_worker_phone || '-'}</p>
+                      <p><span className="font-semibold">Assigned Employee:</span> {s.assigned_worker_name || 'Unassigned'}</p>
+                      <p><span className="font-semibold">Employee Availability:</span> {s.assigned_worker_status || '-'}</p>
+                      <p><span className="font-semibold">Employee Contact:</span> {s.assigned_worker_phone || '-'}</p>
                     </div>
 
                     <div className="mt-2 rounded-lg border bg-white p-2 text-xs text-slate-700">
@@ -1188,7 +1264,7 @@ export default function NgoPage() {
                     </div>
 
                     <div className="mt-2 rounded-lg border bg-white p-2 text-xs text-slate-700">
-                      <p className="font-semibold text-slate-800">Assign NGO Worker</p>
+                      <p className="font-semibold text-slate-800">Assign NGO Employee</p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <select
                           className="min-w-52 rounded border px-2 py-1"
@@ -1659,7 +1735,7 @@ export default function NgoPage() {
                       <div className="mt-1 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
                         <p><span className="font-semibold">Priority:</span> {t.priority || '-'}</p>
                         <p><span className="font-semibold">Assigned:</span> {t.assigned_worker_name || 'Unassigned'}</p>
-                        <p><span className="font-semibold">Worker Availability:</span> {taskWorker?.availability_status || '-'}</p>
+                        <p><span className="font-semibold">Employee Availability:</span> {taskWorker?.availability_status || '-'}</p>
                         <p><span className="font-semibold">Created:</span> {formatWhen(t.created_at)}</p>
                       </div>
                     </article>
@@ -1674,7 +1750,7 @@ export default function NgoPage() {
           <section className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/60 p-4 pt-32">
             <article className="w-full max-w-3xl max-h-[calc(100vh-9rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-2xl break-words">
               <div className="flex items-start justify-between gap-3">
-                <h4 className="text-lg font-bold text-blue-900">Worker Details</h4>
+                <h4 className="text-lg font-bold text-blue-900">Employee Details</h4>
                 <button
                   type="button"
                   onClick={() => setSelectedWorkerId('')}
@@ -1693,7 +1769,7 @@ export default function NgoPage() {
                 <div className="space-y-2 rounded border bg-slate-50 p-3">
                   <p><span className="font-semibold">NGO Name:</span> {selectedWorker.ngo_name || '-'}</p>
                   <p><span className="font-semibold">Linked User ID:</span> {selectedWorker.linked_user_id || '-'}</p>
-                  <p><span className="font-semibold">Worker ID:</span> {selectedWorker.id || '-'}</p>
+                  <p><span className="font-semibold">Employee ID:</span> {selectedWorker.id || '-'}</p>
                   <p><span className="font-semibold">Created At:</span> {selectedWorker.created_at || '-'}</p>
                 </div>
                 <div className="space-y-2 rounded border bg-slate-50 p-3">

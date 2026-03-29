@@ -2,14 +2,99 @@ import express from 'express'
 import { getDb } from '../db/mongo.js'
 import { authRequired } from '../middleware/auth.js'
 import { makeId } from '../services/data.js'
-import { nowIso } from '../utils/common.js'
+import { nowIso, toOptionalNumber } from '../utils/common.js'
 
 const router = express.Router()
 
-router.get('/', authRequired, async (_req, res) => {
+async function getNgoIdsForOwner(db, ownerUserId) {
+  const ngos = await db.collection('ngos').find(
+    { owner_user_id: ownerUserId },
+    { projection: { _id: 0, id: 1 } },
+  ).toArray()
+  return ngos.map((ngo) => ngo.id).filter(Boolean)
+}
+
+function ngoCanManageSurvivorRequest(survivor, ngoUserId, ngoIds = []) {
+  return (
+    survivor?.assigned_ngo_user_id === ngoUserId
+    || (survivor?.assigned_ngo_id && ngoIds.includes(survivor.assigned_ngo_id))
+  )
+}
+
+async function buildSurvivorQueryForUser(db, user) {
+  if (user.role === 'admin') return {}
+  if (user.role === 'survivor') return { created_by_user_id: user.id }
+  if (user.role === 'worker') return { assigned_worker_id: user.id }
+  if (user.role === 'ngo') {
+    const ngoIds = await getNgoIdsForOwner(db, user.id)
+    const orConditions = [{ assigned_ngo_user_id: user.id }]
+    if (ngoIds.length) {
+      orConditions.push({ assigned_ngo_id: { $in: ngoIds } })
+    }
+    return { $or: orConditions }
+  }
+  return { created_by_user_id: user.id }
+}
+
+function normalizeLocationText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function tokenizeLocationText(value) {
+  return normalizeLocationText(value)
+    .split(' ')
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 3)
+}
+
+function scoreAddressMatch(requestLocation, ngoLocationText) {
+  const requestText = normalizeLocationText(requestLocation)
+  const ngoText = normalizeLocationText(ngoLocationText)
+  if (!requestText || !ngoText) return 0
+  if (requestText === ngoText) return 1000
+  if (requestText.includes(ngoText) || ngoText.includes(requestText)) {
+    return 700 + Math.min(requestText.length, ngoText.length)
+  }
+
+  const requestTokens = tokenizeLocationText(requestText)
+  const ngoTokens = new Set(tokenizeLocationText(ngoText))
+  if (!requestTokens.length || !ngoTokens.size) return 0
+
+  let overlap = 0
+  for (const token of requestTokens) {
+    if (ngoTokens.has(token)) overlap += 1
+  }
+  return overlap > 0 ? overlap * 100 : 0
+}
+
+async function findBestNgoByAddress(db, locationText) {
+  const ngos = await db.collection('ngos').find(
+    {},
+    { projection: { _id: 0, id: 1, owner_user_id: 1, name: 1, location: 1, resources: 1 } },
+  ).toArray()
+
+  let bestNgo = null
+  for (const ngo of ngos) {
+    const bestScoreForNgo = scoreAddressMatch(locationText, ngo.location)
+    if (bestScoreForNgo <= 0) continue
+
+    if (!bestNgo || bestScoreForNgo > bestNgo.match_score) {
+      bestNgo = { ...ngo, match_score: bestScoreForNgo }
+    }
+  }
+
+  return bestNgo
+}
+
+router.get('/', authRequired, async (req, res) => {
   try {
     const db = getDb()
-    const survivors = await db.collection('survivors').find({}, { projection: { _id: 0 } }).sort({ created_at: -1 }).toArray()
+    const survivorQuery = await buildSurvivorQueryForUser(db, req.user)
+    const survivors = await db.collection('survivors').find(survivorQuery, { projection: { _id: 0 } }).sort({ created_at: -1 }).toArray()
     const workers = await db.collection('workers').find({}, { projection: { _id: 0 } }).toArray()
     const workerById = new Map()
     workers.forEach((worker) => {
@@ -36,12 +121,28 @@ router.post('/', authRequired, async (req, res) => {
   try {
     const db = getDb()
     const payload = req.body || {}
+    const locationLat = toOptionalNumber(payload.location_lat)
+    const locationLon = toOptionalNumber(payload.location_lon)
+    const locationText = String(payload.location_text || '').trim()
+    const initialAssignedWorkerId = ['admin', 'ngo'].includes(req.user.role)
+      ? (payload.assigned_worker_id || null)
+      : null
+    const matchedNgo = locationText
+      ? await findBestNgoByAddress(db, locationText)
+      : null
     const doc = {
       id: makeId(),
       ...payload,
-      assigned_worker_id: payload.assigned_worker_id || null,
-      request_status: payload.request_status || 'open',
-      worker_response_status: payload.worker_response_status || 'pending',
+      location_lat: locationLat,
+      location_lon: locationLon,
+      assigned_worker_id: initialAssignedWorkerId,
+      assigned_ngo_id: matchedNgo?.id || null,
+      assigned_ngo_user_id: matchedNgo?.owner_user_id || null,
+      assigned_ngo_name: matchedNgo?.name || null,
+      assigned_ngo_distance_km: null,
+      assigned_ngo_match_score: matchedNgo?.match_score ?? null,
+      request_status: initialAssignedWorkerId ? (payload.request_status || 'assigned') : (payload.request_status || 'open'),
+      worker_response_status: initialAssignedWorkerId ? (payload.worker_response_status || 'pending') : (payload.worker_response_status || 'unassigned'),
       created_by_user_id: req.user.id,
       created_at: nowIso(),
       updated_at: nowIso(),
@@ -59,10 +160,12 @@ router.patch('/:id/status', authRequired, async (req, res) => {
     const { id } = req.params
     const { status } = req.body || {}
     if (!status) return res.status(400).json({ detail: 'status is required' })
-    const existing = await db.collection('survivors').findOne({ id })
+    const existing = await db.collection('survivors').findOne({ id }, { projection: { _id: 0 } })
     if (!existing) return res.status(404).json({ detail: 'Survivor request not found' })
     const isOwner = existing.created_by_user_id === req.user.id
-    if (!isOwner && !['admin', 'ngo'].includes(req.user.role)) {
+    const ngoIds = req.user.role === 'ngo' ? await getNgoIdsForOwner(db, req.user.id) : []
+    const canManageAsNgo = req.user.role === 'ngo' && ngoCanManageSurvivorRequest(existing, req.user.id, ngoIds)
+    if (!isOwner && req.user.role !== 'admin' && !canManageAsNgo) {
       return res.status(403).json({ detail: 'Not allowed to update status' })
     }
     await db.collection('survivors').updateOne(
@@ -80,11 +183,12 @@ router.delete('/:id', authRequired, async (req, res) => {
   try {
     const db = getDb()
     const { id } = req.params
-    const existing = await db.collection('survivors').findOne({ id })
+    const existing = await db.collection('survivors').findOne({ id }, { projection: { _id: 0 } })
     if (!existing) return res.status(404).json({ detail: 'Survivor request not found' })
 
     const isOwner = existing.created_by_user_id === req.user.id
-    const canManage = ['admin', 'ngo'].includes(req.user.role)
+    const ngoIds = req.user.role === 'ngo' ? await getNgoIdsForOwner(db, req.user.id) : []
+    const canManage = req.user.role === 'admin' || (req.user.role === 'ngo' && ngoCanManageSurvivorRequest(existing, req.user.id, ngoIds))
     if (!isOwner && !canManage) return res.status(403).json({ detail: 'Not allowed to delete this request' })
 
     await db.collection('survivors').deleteOne({ id })

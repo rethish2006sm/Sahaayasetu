@@ -6,8 +6,16 @@ const roleLink = {
   admin: { to: '/admin', label: 'Admin' },
   survivor: { to: '/survivor', label: 'Survivor' },
   ngo: { to: '/ngo', label: 'NGO' },
-  worker: { to: '/worker', label: 'Worker' },
+  worker: { to: '/worker', label: 'Employee' },
   donor: { to: '/donor', label: 'Donor' },
+}
+
+const roleDisplay = {
+  admin: 'admin',
+  survivor: 'survivor',
+  ngo: 'ngo',
+  worker: 'employee',
+  donor: 'donor',
 }
 
 export default function RoleNav() {
@@ -70,7 +78,7 @@ export default function RoleNav() {
         <div className="flex items-center gap-3 text-sm">
           {user ? (
             <span className="rounded-lg bg-slate-100 px-3 py-2 font-medium text-slate-700">
-              {user.name} ({user.role})
+              {user.name} ({roleDisplay[user.role] || user.role})
             </span>
           ) : (
             <span className="rounded-lg bg-slate-100 px-3 py-2 font-medium text-slate-700">Guest</span>

@@ -13,6 +13,7 @@ export default function SignUpPage() {
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
   const navigate = useNavigate()
+  const roleLabel = (value) => (value === 'worker' ? 'employee' : value)
   const roleOptions = useMemo(() => {
     if (!user) return ['survivor', 'donor']
     if (user.role === 'admin') return ['ngo']
@@ -39,7 +40,7 @@ export default function SignUpPage() {
         token,
         body: { name, email, password, phone: phone || null, role },
       })
-      setMsg(`Created ${data.user.role} user successfully.`)
+      setMsg(`Created ${roleLabel(data.user.role)} user successfully.`)
       if (!user) navigate('/signin')
     } catch (error) {
       setErr(error.message)
@@ -58,7 +59,7 @@ export default function SignUpPage() {
         <section className="bg-white w-full max-w-md p-6 rounded-xl border border-slate-200 shadow-sm mx-auto">
           <h1 className="text-2xl font-bold">Sign Up</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Public signup: donor/survivor. Admin can create NGO accounts. NGO can create worker accounts.
+            Public signup: donor/survivor. Admin can create NGO accounts. NGO can create employee accounts.
           </p>
           <form onSubmit={onSubmit} className="space-y-3 mt-4">
           <input className="w-full border rounded-lg px-3 py-2" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -72,7 +73,7 @@ export default function SignUpPage() {
               disabled={roleOptions.length === 0}
             >
               {roleOptions.length > 0 ? (
-                roleOptions.map((r) => <option key={r} value={r}>{r}</option>)
+                roleOptions.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)
               ) : (
                 <option value="">No role available</option>
               )}

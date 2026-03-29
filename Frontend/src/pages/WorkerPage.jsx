@@ -209,7 +209,7 @@ export default function WorkerPage() {
           availability_status: 'Available',
         },
       })
-      setMsg('Worker profile created successfully.')
+      setMsg('Employee profile created successfully.')
       await load()
     } catch (err) {
       setMsg(err.message)
@@ -304,17 +304,17 @@ export default function WorkerPage() {
         <div className="w-full">
           <RoleNav />
           <section className="bg-white border rounded-xl p-5 shadow-sm">
-            <h1 className="text-2xl font-black text-blue-900">Worker Profile Setup</h1>
-            <p className="mt-1 text-sm text-slate-600">Complete this one-time form to join your NGO worker list and receive assignments.</p>
+            <h1 className="text-2xl font-black text-blue-900">Employee Profile Setup</h1>
+            <p className="mt-1 text-sm text-slate-600">Complete this one-time form to join your NGO employee list and receive assignments.</p>
             <form onSubmit={createWorkerProfile} className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
-              <input className="border rounded-lg px-3 py-2 sm:col-span-2" placeholder="Worker name" value={profileForm.name} onChange={(e) => setProfileForm((p) => ({ ...p, name: e.target.value }))} required />
+              <input className="border rounded-lg px-3 py-2 sm:col-span-2" placeholder="Employee name" value={profileForm.name} onChange={(e) => setProfileForm((p) => ({ ...p, name: e.target.value }))} required />
               <input className="border rounded-lg px-3 py-2" placeholder="Phone" value={profileForm.phone} onChange={(e) => setProfileForm((p) => ({ ...p, phone: e.target.value }))} />
               <input className="border rounded-lg px-3 py-2" placeholder="Coverage area" value={profileForm.coverage_area} onChange={(e) => setProfileForm((p) => ({ ...p, coverage_area: e.target.value }))} />
               <input className="border rounded-lg px-3 py-2 sm:col-span-2" placeholder="Skills comma separated" value={profileForm.skills} onChange={(e) => setProfileForm((p) => ({ ...p, skills: e.target.value }))} />
               <input className="border rounded-lg px-3 py-2" placeholder="Lat (optional)" value={profileForm.lat} onChange={(e) => setProfileForm((p) => ({ ...p, lat: e.target.value }))} />
               <input className="border rounded-lg px-3 py-2" placeholder="Lon (optional)" value={profileForm.lon} onChange={(e) => setProfileForm((p) => ({ ...p, lon: e.target.value }))} />
               <button disabled={savingProfile} className="sm:col-span-2 rounded-lg bg-blue-900 text-white px-4 py-2 disabled:opacity-60">
-                {savingProfile ? 'Saving...' : 'Create Worker Profile'}
+                {savingProfile ? 'Saving...' : 'Create Employee Profile'}
               </button>
             </form>
             {msg ? <p className="mt-3 text-sm text-slate-700">{msg}</p> : null}
@@ -331,7 +331,7 @@ export default function WorkerPage() {
         <section className="bg-white border rounded-xl p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h1 className="text-2xl font-black text-blue-900">Worker Mission Console</h1>
+              <h1 className="text-2xl font-black text-blue-900">Employee Mission Console</h1>
               <p className="text-sm text-slate-600">Track assignments, claim open tasks, and close field work quickly.</p>
             </div>
             <button
@@ -616,7 +616,7 @@ export default function WorkerPage() {
 	                      </div>
 
                       <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-600">
-                        <p><span className="font-semibold">Assigned:</span> {isMine ? 'You' : (isUnassigned ? 'Unassigned' : 'Another worker')}</p>
+                        <p><span className="font-semibold">Assigned:</span> {isMine ? 'You' : (isUnassigned ? 'Unassigned' : 'Another employee')}</p>
                         <p><span className="font-semibold">Created:</span> {formatDate(task.created_at)}</p>
                         <p className="col-span-2"><span className="font-semibold">Task ID:</span> {task.id}</p>
                       </div>
@@ -713,7 +713,7 @@ export default function WorkerPage() {
                 <p><span className="font-semibold">Description:</span> {selectedTask.description || '-'}</p>
                 <p><span className="font-semibold">Priority:</span> {selectedTask.priority || '-'}</p>
                 <p><span className="font-semibold">Status:</span> {selectedTask.status || '-'}</p>
-                <p><span className="font-semibold">Assigned Worker ID:</span> {selectedTask.assigned_worker_id || 'Unassigned'}</p>
+                <p><span className="font-semibold">Assigned Employee ID:</span> {selectedTask.assigned_worker_id || 'Unassigned'}</p>
                 <p><span className="font-semibold">NGO ID:</span> {selectedTask.ngo_id || '-'}</p>
                 <p><span className="font-semibold">Created At:</span> {formatDate(selectedTask.created_at)}</p>
                 <p><span className="font-semibold">Updated At:</span> {formatDate(selectedTask.updated_at)}</p>

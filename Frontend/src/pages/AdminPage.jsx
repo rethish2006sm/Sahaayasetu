@@ -7,13 +7,15 @@ const tools = [
   { id: 'overview', label: 'Overview' },
   { id: 'users', label: 'Users' },
   { id: 'ngos', label: 'NGOs' },
-  { id: 'workers', label: 'NGO Workers' },
+  { id: 'workers', label: 'NGO Employees' },
   { id: 'compensation', label: 'Compensation' },
   { id: 'transactions', label: 'Transactions' },
   { id: 'donations', label: 'Donations' },
   { id: 'history', label: 'History' },
   { id: 'assign', label: 'Assign Tasks' },
 ]
+
+const roleLabel = (role) => (role === 'worker' ? 'employee' : role)
 
 export default function AdminPage() {
   const { token, user } = useAuth()
@@ -396,14 +398,14 @@ export default function AdminPage() {
     () =>
       workers.map((w) => ({
         userId: w.linked_user_id || w.id,
-        label: `${w.name || 'Worker'} (${w.availability_status || 'Unknown'})`,
+        label: `${w.name || 'Employee'} (${w.availability_status || 'Unknown'})`,
       })),
     [workers],
   )
 
   const donationStatusLabel = {
     submitted: 'Submitted',
-    worker_assigned: 'Worker Assigned',
+    worker_assigned: 'Employee Assigned',
     picked_up: 'Picked Up',
     distributed: 'Distributed',
     money_transferred: 'Money Credited',
@@ -439,7 +441,7 @@ export default function AdminPage() {
           })),
           ...assignedTasks.map((t) => ({
             when: t.created_at,
-            label: `Worker task assigned: ${t.title || 'Untitled'} (${t.status || 'open'})`,
+            label: `Employee task assigned: ${t.title || 'Untitled'} (${t.status || 'open'})`,
           })),
           ...createdSurvivorRequests.map((s) => ({
             when: s.created_at,
@@ -451,7 +453,7 @@ export default function AdminPage() {
           })),
           ...workerSurvivorAssignments.map((s) => ({
             when: s.created_at,
-            label: `Worker handled survivor request: ${s.name || 'Unknown'} (${s.request_status || 'open'})`,
+            label: `Employee handled survivor request: ${s.name || 'Unknown'} (${s.request_status || 'open'})`,
           })),
           ...userDonations.map((d) => ({
             when: d.created_at,
@@ -631,7 +633,7 @@ export default function AdminPage() {
   const assignDonationWorker = async (donationId) => {
     const workerUserId = donationWorkerSelection[donationId]
     if (!workerUserId) {
-      setMsg('Select a worker first.')
+      setMsg('Select an employee first.')
       return
     }
     try {
@@ -640,7 +642,7 @@ export default function AdminPage() {
         token,
         body: { worker_user_id: workerUserId },
       })
-      setMsg('Worker assigned for pickup.')
+      setMsg('Employee assigned for pickup.')
       await load()
     } catch (err) {
       setMsg(err.message)
@@ -732,7 +734,7 @@ export default function AdminPage() {
                 <option value="admin">admin</option>
                 <option value="survivor">survivor</option>
                 <option value="ngo">ngo</option>
-                <option value="worker">worker</option>
+                <option value="worker">employee</option>
                 <option value="donor">donor</option>
               </select>
             </div>
@@ -741,7 +743,7 @@ export default function AdminPage() {
                 <article key={u.id} className="mb-2 rounded border bg-slate-50 p-2">
                   <p><span className="font-semibold">Name:</span> {u.name}</p>
                   <p><span className="font-semibold">Email:</span> {u.email}</p>
-                  <p><span className="font-semibold">Role:</span> {u.role}</p>
+                  <p><span className="font-semibold">Role:</span> {roleLabel(u.role)}</p>
                   <p><span className="font-semibold">Created By:</span> {u.created_by || '-'}</p>
                 </article>
               ))}
@@ -783,11 +785,11 @@ export default function AdminPage() {
 
         {activeTool === 'workers' ? (
           <section className="mt-4 rounded-xl border bg-white p-4 shadow-sm">
-            <h2 className="font-semibold text-blue-900">NGO Worker Details + Work Done</h2>
+            <h2 className="font-semibold text-blue-900">NGO Employee Details + Work Done</h2>
             <div className="mt-2 grid gap-2 text-sm md:grid-cols-3">
               <input
                 className="rounded border px-3 py-2 md:col-span-2"
-                placeholder="Search worker name/phone/email/NGO..."
+                placeholder="Search employee name/phone/email/NGO..."
                 value={workerQuery}
                 onChange={(e) => setWorkerQuery(e.target.value)}
               />
@@ -801,7 +803,7 @@ export default function AdminPage() {
             <div className="mt-2 max-h-[30rem] overflow-auto text-sm">
               {filteredWorkerWorkRows.map((w) => (
                 <article key={w.id} className="mb-2 rounded border bg-slate-50 p-2">
-                  <p><span className="font-semibold">Worker:</span> {w.name}</p>
+                  <p><span className="font-semibold">Employee:</span> {w.name}</p>
                   <p><span className="font-semibold">Registered Email:</span> {w.registeredEmail || '-'}</p>
                   <p><span className="font-semibold">Phone:</span> {w.phone || '-'}</p>
                   <p><span className="font-semibold">NGO:</span> {w.ngo_name || '-'} (owner: {w.owner_ngo_user_id || '-'})</p>
@@ -810,7 +812,7 @@ export default function AdminPage() {
                   <p><span className="font-semibold">Survivor Requests Handled:</span> {w.survivorCount}</p>
                 </article>
               ))}
-              {filteredWorkerWorkRows.length === 0 ? <p className="text-slate-500">No workers match this filter.</p> : null}
+              {filteredWorkerWorkRows.length === 0 ? <p className="text-slate-500">No employees match this filter.</p> : null}
             </div>
           </section>
         ) : null}
@@ -1079,7 +1081,7 @@ export default function AdminPage() {
                       )}
                       <p><span className="font-semibold">Status:</span> {donationStatusLabel[d.status] || d.status || 'Submitted'}</p>
                       <p><span className="font-semibold">Incident:</span> {d.incident_ref || '-'}</p>
-                      <p><span className="font-semibold">Assigned Worker:</span> {d.assigned_worker_name || '-'}</p>
+                      <p><span className="font-semibold">Assigned Employee:</span> {d.assigned_worker_name || '-'}</p>
                       <p><span className="font-semibold">Notes:</span> {d.notes || '-'}</p>
                       {d.item_type !== 'money' && d.status !== 'distributed' ? (
                         <div className="mt-2 space-y-2">
@@ -1089,7 +1091,7 @@ export default function AdminPage() {
                               value={donationWorkerSelection[d.id] || ''}
                               onChange={(e) => setDonationWorkerSelection((p) => ({ ...p, [d.id]: e.target.value }))}
                             >
-                              <option value="">Select worker</option>
+                              <option value="">Select employee</option>
                               {workerPickupOptions.map((w) => (
                                 <option key={`${d.id}-${w.userId}`} value={w.userId}>{w.label}</option>
                               ))}
@@ -1099,7 +1101,7 @@ export default function AdminPage() {
                               onClick={() => assignDonationWorker(d.id)}
                               type="button"
                             >
-                              Assign Worker
+                              Assign Employee
                             </button>
                           </div>
                           <div className="flex flex-wrap gap-2">
@@ -1138,7 +1140,7 @@ export default function AdminPage() {
               {userHistoryRows.map((row) => (
                 <article key={row.id} className="rounded border bg-slate-50 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="font-semibold text-slate-900">{row.name} ({row.role})</p>
+                    <p className="font-semibold text-slate-900">{row.name} ({roleLabel(row.role)})</p>
                     <p className="text-xs text-slate-600">{row.email}</p>
                   </div>
                   <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
@@ -1149,7 +1151,7 @@ export default function AdminPage() {
                     <p><span className="font-semibold">In Progress:</span> {row.inProgressAssigned}</p>
                     <p><span className="font-semibold">Survivor Created:</span> {row.survivorCreated}</p>
                     <p><span className="font-semibold">Survivor Assigned (NGO):</span> {row.survivorAssignedByNgo}</p>
-                    <p><span className="font-semibold">Survivor Handled (Worker):</span> {row.survivorHandledByWorker}</p>
+                    <p><span className="font-semibold">Survivor Handled (Employee):</span> {row.survivorHandledByWorker}</p>
                     <p><span className="font-semibold">Donations:</span> {row.donationCount}</p>
                     <p><span className="font-semibold">Missing Reports:</span> {row.missingReportCount}</p>
                   </div>
@@ -1172,7 +1174,7 @@ export default function AdminPage() {
 
         {activeTool === 'assign' ? (
           <section className="mt-4 rounded-xl border bg-white p-4 shadow-sm">
-            <h2 className="font-semibold text-blue-900">Assign Task to NGO / NGO Worker</h2>
+            <h2 className="font-semibold text-blue-900">Assign Task to NGO / NGO Employee</h2>
             <form onSubmit={createTask} className="mt-2 grid gap-2 text-sm md:grid-cols-2">
               <input
                 className="md:col-span-2 rounded border px-3 py-2"
@@ -1211,7 +1213,7 @@ export default function AdminPage() {
                 value={taskForm.assigned_worker_id}
                 onChange={(e) => setTaskForm((p) => ({ ...p, assigned_worker_id: e.target.value }))}
               >
-                <option value="">Assign to NGO only (no worker selected)</option>
+                <option value="">Assign to NGO only (no employee selected)</option>
                 {workersForSelectedNgo.map((w) => (
                   <option key={w.id} value={w.linked_user_id || w.id}>
                     {w.name} - {w.availability_status || 'Unknown'}

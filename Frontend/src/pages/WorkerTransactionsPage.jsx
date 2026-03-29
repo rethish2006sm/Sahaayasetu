@@ -159,7 +159,7 @@ export default function WorkerTransactionsPage() {
               <p className="text-sm text-slate-600">Manage wallet summary, payments, history, and invoices.</p>
             </div>
             <div className="flex gap-2">
-              <Link to="/worker" className="rounded-lg border border-slate-300 px-4 py-2 text-sm">Back to Worker</Link>
+              <Link to="/worker" className="rounded-lg border border-slate-300 px-4 py-2 text-sm">Back to Employee</Link>
               <button
                 onClick={load}
                 disabled={loading || Boolean(actionTaskId)}

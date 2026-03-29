@@ -22,7 +22,7 @@ const statusStyles = {
 
 const statusLabel = {
   submitted: 'Submitted',
-  worker_assigned: 'Worker Assigned',
+  worker_assigned: 'Employee Assigned',
   picked_up: 'Picked Up',
   distributed: 'Distributed',
   money_transferred: 'Credited to Admin',
@@ -97,7 +97,7 @@ export default function DonorPage() {
         <section className="grid gap-4 md:grid-cols-3">
           <article className="rounded-xl border bg-white p-4 md:col-span-2">
             <h1 className="text-2xl font-black text-blue-900">Donor Desk</h1>
-            <p className="mt-1 text-sm text-slate-600">Money donations are instantly credited to admin balance. Item donations are verified, assigned to a worker, then distributed.</p>
+            <p className="mt-1 text-sm text-slate-600">Money donations are instantly credited to admin balance. Item donations are verified, assigned to an employee, then distributed.</p>
             <form onSubmit={submit} className="mt-4 space-y-3">
               <div className="grid gap-3 md:grid-cols-2">
                 <input className="w-full rounded border px-3 py-2" placeholder="Donor Name" value={form.donor_name} onChange={(e) => setForm((p) => ({ ...p, donor_name: e.target.value }))} required />
@@ -158,7 +158,7 @@ export default function DonorPage() {
                     {d.item_type === 'money' ? ` | INR ${Number(d.amount || 0).toFixed(2)}` : ` | Qty ${d.quantity || 1}`}
                   </p>
                   <p className="text-xs text-slate-600">Incident: {d.incident_ref || '-'}</p>
-                  {d.assigned_worker_name ? <p className="text-xs text-slate-600">Assigned Worker: {d.assigned_worker_name}</p> : null}
+                  {d.assigned_worker_name ? <p className="text-xs text-slate-600">Assigned Employee: {d.assigned_worker_name}</p> : null}
                 </div>
               ))}
               {donations.length === 0 ? <p className="text-slate-500">No donations yet.</p> : null}

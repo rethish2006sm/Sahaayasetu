@@ -66,18 +66,41 @@ export async function refreshWorkerAvailabilityByUserId(userId) {
 
 export async function getSummary() {
   const db = getDb()
-  const [survivors, openTasks, alerts, donations] = await Promise.all([
+  const [survivors, openTasks, alerts, donations, shelters, workers, resourceCounts] = await Promise.all([
     db.collection('survivors').countDocuments(),
     db.collection('tasks').countDocuments({ status: { $ne: 'completed' } }),
     db.collection('alerts').countDocuments(),
     db.collection('donations').countDocuments(),
+    db.collection('shelters').find({}, { projection: { _id: 0, capacity: 1, available_beds: 1, occupancy: 1 } }).toArray(),
+    db.collection('workers').find({}, { projection: { _id: 0, availability_status: 1 } }).toArray(),
+    Promise.all([
+      db.collection('ngo_food_supply_resources').countDocuments(),
+      db.collection('ngo_medical_aid_resources').countDocuments(),
+      db.collection('ngo_emergency_service_resources').countDocuments(),
+      db.collection('ngo_clothing_essentials_resources').countDocuments(),
+      db.collection('ngo_water_sanitation_resources').countDocuments(),
+    ]),
   ])
+
+  const availableBeds = shelters.reduce((sum, shelter) => {
+    const beds = shelter.available_beds ?? (Number(shelter.capacity || 0) - Number(shelter.occupancy || 0))
+    return sum + Math.max(Number(beds || 0), 0)
+  }, 0)
+  const activeShelters = shelters.filter((shelter) => Number(shelter.occupancy || 0) > 0).length
+  const availableVolunteers = workers.filter((worker) => String(worker.availability_status || '').toLowerCase() === 'available').length
+  const busyVolunteers = workers.filter((worker) => String(worker.availability_status || '').toLowerCase() === 'on-task').length
+  const resources = resourceCounts.reduce((sum, count) => sum + count, 0)
 
   return {
     survivors,
     open_tasks: openTasks,
     alerts,
     donations,
+    resources,
+    active_shelters: activeShelters,
+    available_beds: availableBeds,
+    available_volunteers: availableVolunteers,
+    busy_volunteers: busyVolunteers,
   }
 }
 
