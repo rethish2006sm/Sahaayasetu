@@ -2,25 +2,123 @@ import express from 'express'
 import { getDb } from '../db/mongo.js'
 import { authRequired, allowRoles } from '../middleware/auth.js'
 import { ensureCompAccount, ensureWalletAccount, getSummary, makeId, refreshWorkerAvailabilityByUserId, sanitizeAmount } from '../services/data.js'
+import { assignWorkerUserOwnership, buildOwnership, getNgoIdsForOwner, getPrimaryNgoForOwner, getWorkerByAssigneeId, hydrateWorkerOwnership, listWorkerAssigneeKeysForNgo, resolveOwnershipForActor, toWorkerOwnershipFields, workerBelongsToNgo } from '../services/ngoAccess.js'
 import { assignSurvivorToShelter, computeShelterStatus, createShelterRecord, updateShelterOccupancyRecord, updateShelterRecord, writeNgoOperationLog } from '../services/ngoResources.js'
 import { nowIso, toNumber, toOptionalNumber } from '../utils/common.js'
 
 const router = express.Router()
 router.use(authRequired)
 
-async function getNgoIdsForOwner(db, ownerUserId) {
-  const ngos = await db.collection('ngos').find(
-    { owner_user_id: ownerUserId },
-    { projection: { _id: 0, id: 1 } },
-  ).toArray()
-  return ngos.map((ngo) => ngo.id).filter(Boolean)
-}
-
 function ngoCanManageSurvivorRequest(survivor, ngoUserId, ngoIds = []) {
   return (
     survivor?.assigned_ngo_user_id === ngoUserId
     || (survivor?.assigned_ngo_id && ngoIds.includes(survivor.assigned_ngo_id))
   )
+}
+
+function taskBelongsToNgo(task, ngoUserId, ngoIds = [], ngoWorkerKeys = []) {
+  return (
+    task?.owner_ngo_user_id === ngoUserId
+    || (task?.ngo_id && ngoIds.includes(task.ngo_id))
+    || (task?.assigned_worker_id && ngoWorkerKeys.includes(task.assigned_worker_id))
+  )
+}
+
+async function buildWorkerQueryForUser(db, user) {
+  if (user.role === 'admin') return {}
+  if (user.role === 'ngo') {
+    const ownedWorkerUsers = await db.collection('users').find(
+      { role: 'worker', owner_ngo_user_id: user.id },
+      { projection: { _id: 0, id: 1 } },
+    ).toArray()
+    const workerUserIds = ownedWorkerUsers.map((item) => item.id).filter(Boolean)
+    const orConditions = [{ owner_ngo_user_id: user.id }]
+    if (workerUserIds.length) orConditions.push({ linked_user_id: { $in: workerUserIds } })
+    return { $or: orConditions }
+  }
+  if (user.role === 'worker') return { linked_user_id: user.id }
+  return { linked_user_id: user.id }
+}
+
+async function buildTaskQueryForUser(db, user) {
+  if (user.role === 'admin') return {}
+
+  if (user.role === 'ngo') {
+    const [ngoIds, ngoWorkerKeys] = await Promise.all([
+      getNgoIdsForOwner(db, user.id),
+      listWorkerAssigneeKeysForNgo(db, user.id),
+    ])
+    const orConditions = [{ owner_ngo_user_id: user.id }]
+    if (ngoIds.length) orConditions.push({ ngo_id: { $in: ngoIds } })
+    if (ngoWorkerKeys.length) orConditions.push({ assigned_worker_id: { $in: ngoWorkerKeys } })
+    return { $or: orConditions }
+  }
+
+  if (user.role === 'worker') {
+    const { ownership } = await resolveOwnershipForActor(db, user)
+    const orConditions = [{ assigned_worker_id: user.id }]
+    if (!ownership.ownerNgoUserId) return { $or: orConditions }
+    if (ownership.ownerNgoUserId) {
+      orConditions.push({ owner_ngo_user_id: ownership.ownerNgoUserId })
+      const ngoIds = await getNgoIdsForOwner(db, ownership.ownerNgoUserId)
+      if (ngoIds.length) orConditions.push({ ngo_id: { $in: ngoIds } })
+    }
+    orConditions.push({ assigned_worker_id: null, owner_ngo_user_id: null, ngo_id: null })
+    return { $or: orConditions }
+  }
+
+  return { created_by_user_id: user.id }
+}
+
+async function buildDonationQueryForUser(db, user) {
+  if (user.role === 'admin') return {}
+  if (user.role === 'ngo') {
+    return {
+      $or: [
+        { assigned_worker_owner_ngo_user_id: user.id },
+        { assigned_worker_user_id: null },
+        { assigned_worker_user_id: { $exists: false } },
+      ],
+    }
+  }
+  if (user.role === 'worker') {
+    const workerProfile = await db.collection('workers').findOne(
+      { linked_user_id: user.id },
+      { projection: { _id: 0, id: 1 } },
+    )
+    const orConditions = [{ assigned_worker_user_id: user.id }]
+    if (workerProfile?.id) orConditions.push({ assigned_worker_profile_id: workerProfile.id })
+    return { $or: orConditions }
+  }
+  if (user.role === 'donor') return { donor_user_id: user.id }
+  return { donor_user_id: user.id }
+}
+
+async function resolveTaskAssignee(db, requestedWorkerId, ownerNgoUserId, actorUser) {
+  if (!requestedWorkerId) {
+    return {
+      normalizedAssigneeId: null,
+      worker: null,
+      ownership: buildOwnership(ownerNgoUserId || null, null, null),
+    }
+  }
+
+  const worker = await getWorkerByAssigneeId(db, requestedWorkerId)
+  if (!worker) throw new Error('Employee not found')
+  if (!worker.owner_ngo_user_id) throw new Error('Employee is not linked to any NGO')
+  if (actorUser.role === 'ngo' && !workerBelongsToNgo(worker, actorUser.id)) {
+    throw new Error('You can assign only your own employees')
+  }
+  if (ownerNgoUserId && worker.owner_ngo_user_id !== ownerNgoUserId) {
+    throw new Error('Employee belongs to a different NGO')
+  }
+
+  const ngoProfile = await getPrimaryNgoForOwner(db, worker.owner_ngo_user_id)
+  return {
+    normalizedAssigneeId: worker.linked_user_id || worker.id,
+    worker,
+    ownership: buildOwnership(worker.owner_ngo_user_id, ngoProfile, worker.ngo_name || null),
+  }
 }
 
 const list = (collection, sort = { created_at: -1 }) => async (_req, res) => {
@@ -136,42 +234,324 @@ router.delete('/shelters/:id', allowRoles('admin', 'ngo'), async (req, res) => {
   }
 })
 
-router.get('/tasks', async (_req, res) => {
-  try { const db = getDb(); const [tasks, workers] = await Promise.all([db.collection('tasks').find({}, { projection: { _id: 0 } }).sort({ created_at: -1 }).toArray(), db.collection('workers').find({}, { projection: { _id: 0 } }).toArray()]); const workerByUser = new Map(workers.filter((w) => w.linked_user_id).map((w) => [w.linked_user_id, w])); res.json(tasks.map((t) => ({ ...t, assigned_worker_name: workerByUser.get(t.assigned_worker_id)?.name || null }))) }
+router.get('/tasks', async (req, res) => {
+  try {
+    const db = getDb()
+    const query = await buildTaskQueryForUser(db, req.user)
+    const [tasks, workers] = await Promise.all([
+      db.collection('tasks').find(query, { projection: { _id: 0 } }).sort({ created_at: -1 }).toArray(),
+      db.collection('workers').find({}, { projection: { _id: 0 } }).toArray(),
+    ])
+    const workerByUser = new Map()
+    workers.forEach((worker) => {
+      if (worker.id) workerByUser.set(worker.id, worker)
+      if (worker.linked_user_id) workerByUser.set(worker.linked_user_id, worker)
+    })
+    res.json(tasks.map((t) => ({ ...t, assigned_worker_name: workerByUser.get(t.assigned_worker_id)?.name || null })))
+  }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
 router.post('/tasks', allowRoles('admin', 'ngo'), async (req, res) => {
-  try { const db = getDb(); const b = req.body || {}; const doc = { id: makeId(), title: b.title || 'Untitled task', description: b.description || '', priority: b.priority || 'medium', status: b.status || 'open', assigned_worker_id: b.assigned_worker_id || null, ngo_id: b.ngo_id || null, category: b.category || null, assignment_tag: b.assignment_tag || 'general', is_admin_special: Boolean(b.is_admin_special), location_text: b.location_text || null, survivor_id: b.survivor_id || null, created_by_user_id: req.user.id, created_by_role: req.user.role, created_at: nowIso(), updated_at: nowIso() }; await db.collection('tasks').insertOne(doc); if (doc.assigned_worker_id) await refreshWorkerAvailabilityByUserId(doc.assigned_worker_id); res.status(201).json(doc) }
-  catch (e) { res.status(500).json({ detail: e.message }) }
-})
-router.patch('/tasks/:id/status', async (req, res) => {
-  try { const db = getDb(); const t = await db.collection('tasks').findOne({ id: req.params.id }, { projection: { _id: 0 } }); if (!t) return res.status(404).json({ detail: 'Task not found' }); const b = req.body || {}; const set = { status: b.status || t.status, assigned_worker_id: b.assigned_worker_id === undefined ? t.assigned_worker_id : b.assigned_worker_id, updated_at: nowIso() }; await db.collection('tasks').updateOne({ id: t.id }, { $set: set }); if (t.assigned_worker_id) await refreshWorkerAvailabilityByUserId(t.assigned_worker_id); if (set.assigned_worker_id) await refreshWorkerAvailabilityByUserId(set.assigned_worker_id); const f = await db.collection('tasks').findOne({ id: t.id }, { projection: { _id: 0 } }); res.json(f) }
-  catch (e) { res.status(500).json({ detail: e.message }) }
-})
-router.delete('/tasks/:id', allowRoles('admin', 'ngo'), async (req, res) => { try { const db = getDb(); const t = await db.collection('tasks').findOne({ id: req.params.id }, { projection: { _id: 0 } }); await db.collection('tasks').deleteOne({ id: req.params.id }); if (t?.assigned_worker_id) await refreshWorkerAvailabilityByUserId(t.assigned_worker_id); res.status(204).send() } catch (e) { res.status(500).json({ detail: e.message }) } })
+  try {
+    const db = getDb()
+    const b = req.body || {}
 
-router.get('/workers', list('workers'))
-router.post('/workers', async (req, res) => {
-  try { const db = getDb(); const b = req.body || {}; const linked_user_id = req.user.role === 'worker' ? req.user.id : (b.linked_user_id || null); if (linked_user_id) { const ex = await db.collection('workers').findOne({ linked_user_id }, { projection: { _id: 0 } }); if (ex) return res.status(409).json({ detail: 'Worker profile already exists for this user' }) }
-    const doc = { id: makeId(), linked_user_id, name: b.name || req.user.name, phone: b.phone || req.user.phone || null, skills: Array.isArray(b.skills) ? b.skills : [], coverage_area: b.coverage_area || null, lat: b.lat ?? null, lon: b.lon ?? null, availability_status: b.availability_status || 'Available', created_at: nowIso(), updated_at: nowIso() }
-    await db.collection('workers').insertOne(doc); res.status(201).json(doc) }
+    if (req.user.role === 'ngo' && b.owner_ngo_user_id && b.owner_ngo_user_id !== req.user.id) {
+      return res.status(403).json({ detail: 'You can create tasks only for your NGO' })
+    }
+
+    let ownerNgoUserId = req.user.role === 'ngo' ? req.user.id : (b.owner_ngo_user_id || null)
+    let ownerNgoProfile = ownerNgoUserId ? await getPrimaryNgoForOwner(db, ownerNgoUserId) : null
+    if (req.user.role === 'admin' && ownerNgoUserId && !ownerNgoProfile) {
+      return res.status(400).json({ detail: 'Selected NGO profile was not found' })
+    }
+
+    const assignee = await resolveTaskAssignee(db, b.assigned_worker_id || null, ownerNgoUserId, req.user)
+    if (assignee.worker && !ownerNgoUserId) {
+      ownerNgoUserId = assignee.worker.owner_ngo_user_id
+      ownerNgoProfile = await getPrimaryNgoForOwner(db, ownerNgoUserId)
+    }
+
+    const doc = {
+      id: makeId(),
+      title: b.title || 'Untitled task',
+      description: b.description || '',
+      priority: b.priority || 'medium',
+      status: b.status || 'open',
+      assigned_worker_id: assignee.normalizedAssigneeId,
+      assigned_worker_profile_id: assignee.worker?.id || null,
+      assigned_worker_owner_ngo_user_id: assignee.worker?.owner_ngo_user_id || null,
+      owner_ngo_user_id: ownerNgoUserId || null,
+      ngo_id: ownerNgoProfile?.id || null,
+      ngo_name: ownerNgoProfile?.name || null,
+      category: b.category || null,
+      assignment_tag: b.assignment_tag || 'general',
+      is_admin_special: Boolean(b.is_admin_special),
+      location_text: b.location_text || null,
+      survivor_id: b.survivor_id || null,
+      created_by_user_id: req.user.id,
+      created_by_role: req.user.role,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    }
+
+    await db.collection('tasks').insertOne(doc)
+    if (doc.assigned_worker_id) await refreshWorkerAvailabilityByUserId(doc.assigned_worker_id)
+    res.status(201).json(doc)
+  }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
-router.get('/workers/me', async (req, res) => { try { const db = getDb(); const profile = await db.collection('workers').findOne({ linked_user_id: req.user.id }, { projection: { _id: 0 } }); res.json({ profile: profile || null }) } catch (e) { res.status(500).json({ detail: e.message }) } })
-router.patch('/workers/me/status', async (req, res) => { try { const status = await refreshWorkerAvailabilityByUserId(req.user.id); res.json({ status: status || null }) } catch (e) { res.status(500).json({ detail: e.message }) } })
-router.delete('/workers/:id', allowRoles('admin', 'ngo'), async (req, res) => { try { const db = getDb(); await db.collection('workers').deleteOne({ id: req.params.id }); res.status(204).send() } catch (e) { res.status(500).json({ detail: e.message }) } })
+router.patch('/tasks/:id/status', allowRoles('admin', 'ngo', 'worker'), async (req, res) => {
+  try {
+    const db = getDb()
+    const t = await db.collection('tasks').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!t) return res.status(404).json({ detail: 'Task not found' })
 
-router.get('/donations', list('donations'))
+    const b = req.body || {}
+    const requestedAssigneeId = b.assigned_worker_id === undefined ? t.assigned_worker_id : (b.assigned_worker_id || null)
+
+    if (req.user.role === 'ngo') {
+      const [ngoIds, ngoWorkerKeys] = await Promise.all([
+        getNgoIdsForOwner(db, req.user.id),
+        listWorkerAssigneeKeysForNgo(db, req.user.id),
+      ])
+      if (!taskBelongsToNgo(t, req.user.id, ngoIds, ngoWorkerKeys)) {
+        return res.status(403).json({ detail: 'This task belongs to another NGO' })
+      }
+    }
+
+    if (req.user.role === 'worker') {
+      const { ownership } = await resolveOwnershipForActor(db, req.user)
+      const canManageOwnTask = t.assigned_worker_id === req.user.id
+      const canClaimTask = (
+        !t.assigned_worker_id
+        && requestedAssigneeId === req.user.id
+        && (!t.owner_ngo_user_id || (ownership.ownerNgoUserId && t.owner_ngo_user_id === ownership.ownerNgoUserId))
+      )
+      if (!canManageOwnTask && !canClaimTask) {
+        return res.status(403).json({ detail: 'You can update only your own NGO tasks' })
+      }
+      if (requestedAssigneeId && requestedAssigneeId !== req.user.id) {
+        return res.status(403).json({ detail: 'You can assign tasks only to yourself' })
+      }
+    }
+
+    const expectedOwnerNgoUserId = req.user.role === 'ngo'
+      ? req.user.id
+      : (t.owner_ngo_user_id || null)
+    const assignee = await resolveTaskAssignee(db, requestedAssigneeId, expectedOwnerNgoUserId, req.user)
+
+    const set = {
+      status: b.status || t.status,
+      assigned_worker_id: assignee.normalizedAssigneeId,
+      assigned_worker_profile_id: assignee.worker?.id || null,
+      assigned_worker_owner_ngo_user_id: assignee.worker?.owner_ngo_user_id || null,
+      updated_at: nowIso(),
+    }
+
+    await db.collection('tasks').updateOne({ id: t.id }, { $set: set })
+    if (t.assigned_worker_id) await refreshWorkerAvailabilityByUserId(t.assigned_worker_id)
+    if (set.assigned_worker_id) await refreshWorkerAvailabilityByUserId(set.assigned_worker_id)
+    const f = await db.collection('tasks').findOne({ id: t.id }, { projection: { _id: 0 } })
+    res.json(f)
+  }
+  catch (e) { res.status(500).json({ detail: e.message }) }
+})
+router.delete('/tasks/:id', allowRoles('admin', 'ngo'), async (req, res) => {
+  try {
+    const db = getDb()
+    const t = await db.collection('tasks').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!t) return res.status(404).json({ detail: 'Task not found' })
+
+    if (req.user.role === 'ngo') {
+      const [ngoIds, ngoWorkerKeys] = await Promise.all([
+        getNgoIdsForOwner(db, req.user.id),
+        listWorkerAssigneeKeysForNgo(db, req.user.id),
+      ])
+      if (!taskBelongsToNgo(t, req.user.id, ngoIds, ngoWorkerKeys)) {
+        return res.status(403).json({ detail: 'This task belongs to another NGO' })
+      }
+    }
+
+    await db.collection('tasks').deleteOne({ id: req.params.id })
+    if (t.assigned_worker_id) await refreshWorkerAvailabilityByUserId(t.assigned_worker_id)
+    res.status(204).send()
+  } catch (e) { res.status(500).json({ detail: e.message }) }
+})
+
+router.get('/workers', async (req, res) => {
+  try {
+    const db = getDb()
+    const query = await buildWorkerQueryForUser(db, req.user)
+    const workers = await db.collection('workers').find(query, { projection: { _id: 0 } }).sort({ created_at: -1 }).toArray()
+    const hydrated = await Promise.all(workers.map((worker) => hydrateWorkerOwnership(db, worker)))
+    res.json(hydrated)
+  } catch (e) { res.status(500).json({ detail: e.message }) }
+})
+router.post('/workers', allowRoles('admin', 'ngo', 'worker'), async (req, res) => {
+  try {
+    const db = getDb()
+    const b = req.body || {}
+    const linked_user_id = req.user.role === 'worker' ? req.user.id : (b.linked_user_id || null)
+
+    if (linked_user_id) {
+      const ex = await db.collection('workers').findOne({ linked_user_id }, { projection: { _id: 0 } })
+      if (ex) return res.status(409).json({ detail: 'Worker profile already exists for this user' })
+    }
+
+    let ownership = null
+    if (req.user.role === 'worker') {
+      const resolved = await resolveOwnershipForActor(db, req.user)
+      ownership = resolved.ownership
+      if (!ownership.ownerNgoUserId) {
+        return res.status(403).json({ detail: 'Employee account is not linked to any NGO' })
+      }
+    } else if (req.user.role === 'ngo') {
+      const ngoProfile = await getPrimaryNgoForOwner(db, req.user.id)
+      ownership = buildOwnership(req.user.id, ngoProfile, ngoProfile?.name || req.user.name || null)
+    } else {
+      const ownerNgoUserId = b.owner_ngo_user_id || null
+      if (!ownerNgoUserId) return res.status(400).json({ detail: 'owner_ngo_user_id is required for admin-created employee profiles' })
+      const ngoProfile = await getPrimaryNgoForOwner(db, ownerNgoUserId)
+      ownership = buildOwnership(ownerNgoUserId, ngoProfile, ngoProfile?.name || null)
+    }
+
+    if (linked_user_id && ownership.ownerNgoUserId) {
+      await assignWorkerUserOwnership(db, linked_user_id, ownership.ownerNgoUserId)
+    }
+
+    const doc = {
+      id: makeId(),
+      linked_user_id,
+      name: b.name || req.user.name,
+      phone: b.phone || req.user.phone || null,
+      skills: Array.isArray(b.skills) ? b.skills : [],
+      coverage_area: b.coverage_area || null,
+      lat: b.lat ?? null,
+      lon: b.lon ?? null,
+      availability_status: b.availability_status || 'Available',
+      ...toWorkerOwnershipFields(ownership),
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    }
+    await db.collection('workers').insertOne(doc)
+    res.status(201).json(doc)
+  }
+  catch (e) { res.status(500).json({ detail: e.message }) }
+})
+router.get('/workers/me', allowRoles('worker'), async (req, res) => {
+  try {
+    const db = getDb()
+    const profile = await db.collection('workers').findOne({ linked_user_id: req.user.id }, { projection: { _id: 0 } })
+    const hydrated = await hydrateWorkerOwnership(db, profile)
+    res.json({ profile: hydrated || null })
+  } catch (e) { res.status(500).json({ detail: e.message }) }
+})
+router.patch('/workers/me/status', allowRoles('worker'), async (req, res) => { try { const status = await refreshWorkerAvailabilityByUserId(req.user.id); res.json({ status: status || null }) } catch (e) { res.status(500).json({ detail: e.message }) } })
+router.delete('/workers/:id', allowRoles('admin', 'ngo'), async (req, res) => {
+  try {
+    const db = getDb()
+    const existing = await db.collection('workers').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!existing) return res.status(404).json({ detail: 'Employee not found' })
+    const worker = await hydrateWorkerOwnership(db, existing)
+
+    if (req.user.role === 'ngo' && !workerBelongsToNgo(worker, req.user.id)) {
+      return res.status(403).json({ detail: 'You can delete only your own employees' })
+    }
+
+    await db.collection('workers').deleteOne({ id: req.params.id })
+    res.status(204).send()
+  } catch (e) { res.status(500).json({ detail: e.message }) }
+})
+
+router.get('/donations', async (req, res) => {
+  try {
+    const db = getDb()
+    const query = await buildDonationQueryForUser(db, req.user)
+    const data = await db.collection('donations').find(query, { projection: { _id: 0 } }).sort({ created_at: -1 }).toArray()
+    res.json(data)
+  } catch (e) { res.status(500).json({ detail: e.message }) }
+})
 router.post('/donations', async (req, res) => {
   try { const db = getDb(); const b = req.body || {}; const doc = { id: makeId(), donor_user_id: req.user.id, donor_name: b.donor_name || req.user.name, donor_phone: b.donor_phone || req.user.phone || null, item_type: b.item_type || 'other', custom_item: b.custom_item || null, quantity: toNumber(b.quantity, 1), amount: b.amount ? toNumber(b.amount, 0) : null, incident_ref: b.incident_ref || null, notes: b.notes || null, status: 'submitted', assigned_worker_user_id: null, assigned_worker_profile_id: null, created_at: nowIso(), updated_at: nowIso() }; await db.collection('donations').insertOne(doc); res.status(201).json(doc) }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
 router.patch('/donations/:id/assign-worker', allowRoles('admin', 'ngo'), async (req, res) => {
-  try { const db = getDb(); const workerUserId = req.body?.worker_user_id; if (!workerUserId) return res.status(400).json({ detail: 'worker_user_id is required' }); const worker = await db.collection('workers').findOne({ linked_user_id: workerUserId }, { projection: { _id: 0 } }); await db.collection('donations').updateOne({ id: req.params.id }, { $set: { assigned_worker_user_id: workerUserId, assigned_worker_profile_id: worker?.id || null, status: 'worker_assigned', updated_at: nowIso() } }); const f = await db.collection('donations').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) }
+  try {
+    const db = getDb()
+    const workerUserId = req.body?.worker_user_id
+    if (!workerUserId) return res.status(400).json({ detail: 'worker_user_id is required' })
+
+    const worker = await getWorkerByAssigneeId(db, workerUserId)
+    if (!worker) return res.status(404).json({ detail: 'Employee not found' })
+    if (req.user.role === 'ngo' && !workerBelongsToNgo(worker, req.user.id)) {
+      return res.status(403).json({ detail: 'You can assign only your own employees' })
+    }
+
+    await db.collection('donations').updateOne(
+      { id: req.params.id },
+      {
+        $set: {
+          assigned_worker_user_id: worker.linked_user_id || worker.id,
+          assigned_worker_profile_id: worker.id || null,
+          assigned_worker_owner_ngo_user_id: worker.owner_ngo_user_id || null,
+          assigned_worker_name: worker.name || null,
+          status: 'worker_assigned',
+          updated_at: nowIso(),
+        },
+      },
+    )
+    const f = await db.collection('donations').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    res.json(f || {})
+  }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
-router.patch('/donations/:id/mark-picked-up', async (req, res) => { try { const db = getDb(); await db.collection('donations').updateOne({ id: req.params.id }, { $set: { status: 'picked_up', updated_at: nowIso() } }); const f = await db.collection('donations').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) } catch (e) { res.status(500).json({ detail: e.message }) } })
-router.patch('/donations/:id/mark-distributed', async (req, res) => { try { const db = getDb(); await db.collection('donations').updateOne({ id: req.params.id }, { $set: { status: 'distributed', updated_at: nowIso() } }); const f = await db.collection('donations').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) } catch (e) { res.status(500).json({ detail: e.message }) } })
+router.patch('/donations/:id/mark-picked-up', allowRoles('admin', 'ngo', 'worker'), async (req, res) => {
+  try {
+    const db = getDb()
+    const donation = await db.collection('donations').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!donation) return res.status(404).json({ detail: 'Donation not found' })
+
+    if (req.user.role === 'ngo' && donation.assigned_worker_owner_ngo_user_id !== req.user.id) {
+      return res.status(403).json({ detail: 'This pickup belongs to another NGO employee' })
+    }
+    if (req.user.role === 'worker') {
+      const myProfile = await db.collection('workers').findOne(
+        { linked_user_id: req.user.id },
+        { projection: { _id: 0, id: 1 } },
+      )
+      const isMine = donation.assigned_worker_user_id === req.user.id || (myProfile?.id && donation.assigned_worker_profile_id === myProfile.id)
+      if (!isMine) return res.status(403).json({ detail: 'This pickup is not assigned to you' })
+    }
+
+    await db.collection('donations').updateOne({ id: req.params.id }, { $set: { status: 'picked_up', updated_at: nowIso() } })
+    const f = await db.collection('donations').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    res.json(f || {})
+  } catch (e) { res.status(500).json({ detail: e.message }) }
+})
+router.patch('/donations/:id/mark-distributed', allowRoles('admin', 'ngo', 'worker'), async (req, res) => {
+  try {
+    const db = getDb()
+    const donation = await db.collection('donations').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    if (!donation) return res.status(404).json({ detail: 'Donation not found' })
+
+    if (req.user.role === 'ngo' && donation.assigned_worker_owner_ngo_user_id !== req.user.id) {
+      return res.status(403).json({ detail: 'This distribution belongs to another NGO employee' })
+    }
+    if (req.user.role === 'worker') {
+      const myProfile = await db.collection('workers').findOne(
+        { linked_user_id: req.user.id },
+        { projection: { _id: 0, id: 1 } },
+      )
+      const isMine = donation.assigned_worker_user_id === req.user.id || (myProfile?.id && donation.assigned_worker_profile_id === myProfile.id)
+      if (!isMine) return res.status(403).json({ detail: 'This distribution is not assigned to you' })
+    }
+
+    await db.collection('donations').updateOne({ id: req.params.id }, { $set: { status: 'distributed', updated_at: nowIso() } })
+    const f = await db.collection('donations').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+    res.json(f || {})
+  } catch (e) { res.status(500).json({ detail: e.message }) }
+})
 
 router.get('/missing-persons', list('missing_persons'))
 router.post('/missing-persons', async (req, res) => {
@@ -206,12 +586,26 @@ router.patch('/survivor-requests/:id/assign', allowRoles('admin', 'ngo'), async 
       }
     }
 
+    const worker = workerId ? await getWorkerByAssigneeId(db, workerId) : null
+    if (workerId && !worker) {
+      return res.status(404).json({ detail: 'Employee not found' })
+    }
+    if (req.user.role === 'ngo' && worker && !workerBelongsToNgo(worker, req.user.id)) {
+      return res.status(403).json({ detail: 'You can assign only your own employees' })
+    }
+
+    const assignmentNgoUserId = worker?.owner_ngo_user_id || existing.assigned_ngo_user_id || (req.user.role === 'ngo' ? req.user.id : null)
+    const assignmentNgoProfile = assignmentNgoUserId ? await getPrimaryNgoForOwner(db, assignmentNgoUserId) : null
+
     await db.collection('survivors').updateOne(
       { id: req.params.id },
       {
         $set: {
-          assigned_worker_id: workerId,
-          assigned_by_ngo_user_id: req.user.role === 'ngo' ? req.user.id : (existing.assigned_by_ngo_user_id || null),
+          assigned_worker_id: worker?.linked_user_id || worker?.id || null,
+          assigned_ngo_user_id: assignmentNgoUserId || null,
+          assigned_ngo_id: assignmentNgoProfile?.id || existing.assigned_ngo_id || null,
+          assigned_ngo_name: assignmentNgoProfile?.name || existing.assigned_ngo_name || null,
+          assigned_by_ngo_user_id: req.user.role === 'ngo' ? req.user.id : (assignmentNgoUserId || existing.assigned_by_ngo_user_id || null),
           request_status: workerId ? 'assigned' : 'open',
           worker_response_status: workerId ? 'pending' : 'unassigned',
           updated_at: nowIso(),
@@ -219,10 +613,12 @@ router.patch('/survivor-requests/:id/assign', allowRoles('admin', 'ngo'), async 
       },
     )
 
-    if (existing.assigned_worker_id && existing.assigned_worker_id !== workerId) {
+    const normalizedWorkerId = worker?.linked_user_id || worker?.id || null
+
+    if (existing.assigned_worker_id && existing.assigned_worker_id !== normalizedWorkerId) {
       await refreshWorkerAvailabilityByUserId(existing.assigned_worker_id)
     }
-    if (workerId) await refreshWorkerAvailabilityByUserId(workerId)
+    if (normalizedWorkerId) await refreshWorkerAvailabilityByUserId(normalizedWorkerId)
 
     const updated = await db.collection('survivors').findOne({ id: req.params.id }, { projection: { _id: 0 } })
     res.json(updated || {})

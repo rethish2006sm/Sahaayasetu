@@ -6,6 +6,9 @@ export function pickUserPublic(userDoc) {
     email: userDoc.email,
     role: userDoc.role,
     phone: userDoc.phone || null,
+    owner_ngo_user_id: userDoc.owner_ngo_user_id || null,
+    owner_ngo_id: userDoc.owner_ngo_id || null,
+    owner_ngo_name: userDoc.owner_ngo_name || null,
     created_at: userDoc.created_at,
   }
 }

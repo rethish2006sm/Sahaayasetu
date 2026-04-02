@@ -2,17 +2,10 @@ import express from 'express'
 import { getDb } from '../db/mongo.js'
 import { authRequired } from '../middleware/auth.js'
 import { makeId } from '../services/data.js'
+import { getNgoIdsForOwner, getPrimaryNgoForOwner, getWorkerByAssigneeId, workerBelongsToNgo } from '../services/ngoAccess.js'
 import { nowIso, toOptionalNumber } from '../utils/common.js'
 
 const router = express.Router()
-
-async function getNgoIdsForOwner(db, ownerUserId) {
-  const ngos = await db.collection('ngos').find(
-    { owner_user_id: ownerUserId },
-    { projection: { _id: 0, id: 1 } },
-  ).toArray()
-  return ngos.map((ngo) => ngo.id).filter(Boolean)
-}
 
 function ngoCanManageSurvivorRequest(survivor, ngoUserId, ngoIds = []) {
   return (
@@ -124,21 +117,33 @@ router.post('/', authRequired, async (req, res) => {
     const locationLat = toOptionalNumber(payload.location_lat)
     const locationLon = toOptionalNumber(payload.location_lon)
     const locationText = String(payload.location_text || '').trim()
+    const initialAssignedWorker = ['admin', 'ngo'].includes(req.user.role) && payload.assigned_worker_id
+      ? await getWorkerByAssigneeId(db, payload.assigned_worker_id)
+      : null
+    if (payload.assigned_worker_id && !initialAssignedWorker) {
+      return res.status(404).json({ detail: 'Employee not found' })
+    }
+    if (req.user.role === 'ngo' && initialAssignedWorker && !workerBelongsToNgo(initialAssignedWorker, req.user.id)) {
+      return res.status(403).json({ detail: 'You can assign only your own employees' })
+    }
+
     const initialAssignedWorkerId = ['admin', 'ngo'].includes(req.user.role)
-      ? (payload.assigned_worker_id || null)
+      ? (initialAssignedWorker?.linked_user_id || initialAssignedWorker?.id || null)
       : null
     const matchedNgo = locationText
       ? await findBestNgoByAddress(db, locationText)
       : null
+    const assignedNgoUserId = initialAssignedWorker?.owner_ngo_user_id || matchedNgo?.owner_user_id || null
+    const assignedNgoProfile = assignedNgoUserId ? await getPrimaryNgoForOwner(db, assignedNgoUserId) : null
     const doc = {
       id: makeId(),
       ...payload,
       location_lat: locationLat,
       location_lon: locationLon,
       assigned_worker_id: initialAssignedWorkerId,
-      assigned_ngo_id: matchedNgo?.id || null,
-      assigned_ngo_user_id: matchedNgo?.owner_user_id || null,
-      assigned_ngo_name: matchedNgo?.name || null,
+      assigned_ngo_id: assignedNgoProfile?.id || matchedNgo?.id || null,
+      assigned_ngo_user_id: assignedNgoUserId,
+      assigned_ngo_name: assignedNgoProfile?.name || matchedNgo?.name || null,
       assigned_ngo_distance_km: null,
       assigned_ngo_match_score: matchedNgo?.match_score ?? null,
       request_status: initialAssignedWorkerId ? (payload.request_status || 'assigned') : (payload.request_status || 'open'),

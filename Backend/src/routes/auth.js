@@ -6,6 +6,7 @@ import { env } from '../config/env.js'
 import { authRequired, allowRoles, makeToken } from '../middleware/auth.js'
 import { pickUserPublic, nowIso } from '../utils/common.js'
 import { ensureCompAccount, ensureWalletAccount, makeId } from '../services/data.js'
+import { buildOwnership, getPrimaryNgoForOwner, toUserOwnershipFields } from '../services/ngoAccess.js'
 
 const router = express.Router()
 
@@ -44,6 +45,16 @@ router.post('/signup', async (req, res) => {
     const exists = await db.collection('users').findOne({ email })
     if (exists) return res.status(409).json({ detail: 'Email already registered' })
 
+    let workerOwnershipFields = {}
+    if (role === 'worker' && creator?.role === 'ngo') {
+      const creatorNgo = await getPrimaryNgoForOwner(db, creator.id)
+      const ownership = buildOwnership(creator.id, creatorNgo, creatorNgo?.name || creator.name || null)
+      workerOwnershipFields = {
+        ...toUserOwnershipFields(ownership),
+        created_by_user_id: creator.id,
+      }
+    }
+
     const user = {
       id: makeId(),
       name,
@@ -51,6 +62,7 @@ router.post('/signup', async (req, res) => {
       password_hash: await bcrypt.hash(password, 10),
       role,
       phone: phone || null,
+      ...workerOwnershipFields,
       created_at: nowIso(),
       updated_at: nowIso(),
     }
