@@ -14,7 +14,7 @@ const services = [
   },
   {
     title: 'Resource Coordination',
-    description: 'Match needs with NGO and donor resources quickly.',
+    description: 'Match needs with NGO and donor resources.',
     icon: 'RES',
   },
   {
