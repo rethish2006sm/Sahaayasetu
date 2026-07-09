@@ -29,7 +29,7 @@ const services = [
   },
   {
     title: 'Missing Person',
-    description: 'we can report/find missing person',
+    description: 'we can report or find missing person',
     icon: 'MP',
   },
   {
