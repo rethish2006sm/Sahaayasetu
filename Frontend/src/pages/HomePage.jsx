@@ -28,7 +28,7 @@ const services = [
     icon: 'Ai',
   },
   {
-    title: 'Missing Person',
+    title: 'Missing Persons',
     description: 'we can report or find missing person',
     icon: 'MP',
   },
