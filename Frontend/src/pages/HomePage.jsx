@@ -13,7 +13,7 @@ const services = [
     icon: 'Request',
   },
   {
-    title: 'Resource Coordination',
+    title: 'Resource Coordinations',
     description: 'Match needs with NGO and donor resources.',
     icon: 'RES',
   },
