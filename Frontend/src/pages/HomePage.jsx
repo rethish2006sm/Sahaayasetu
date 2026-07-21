@@ -23,7 +23,7 @@ const services = [
     icon: 'ALT',
   },
   {
-    title: 'Ai/Voice Assist',
+    title: 'Ai/Voice Assists',
     description: 'Ai and Voice assistant support',
     icon: 'Ai',
   },
