@@ -9,7 +9,7 @@ import heroSection from '../assets/herosection.png'
 const services = [
   {
     title: 'Request NGO Direct',
-    description: 'You can request help from NGO',
+    description: 'You can request help from NGOs',
     icon: 'Request',
   },
   {
