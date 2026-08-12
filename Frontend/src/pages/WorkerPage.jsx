@@ -305,7 +305,7 @@ export default function WorkerPage() {
           <RoleNav />
           <section className="bg-white border rounded-xl p-5 shadow-sm">
             <h1 className="text-2xl font-black text-blue-900">Employee Profile Setup</h1>
-            <p className="mt-1 text-sm text-slate-600">Complete this one-time form to join your NGO employee list and receive assignments.</p>
+            <p className="mt-1 text-sm text-slate-600">Complete this one time form to join your NGO's employee list and receive assignments.</p>
             <form onSubmit={createWorkerProfile} className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
               <input className="border rounded-lg px-3 py-2 sm:col-span-2" placeholder="Employee name" value={profileForm.name} onChange={(e) => setProfileForm((p) => ({ ...p, name: e.target.value }))} required />
               <input className="border rounded-lg px-3 py-2" placeholder="Phone" value={profileForm.phone} onChange={(e) => setProfileForm((p) => ({ ...p, phone: e.target.value }))} />
