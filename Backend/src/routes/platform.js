@@ -1,4 +1,9 @@
 import express from 'express'
+import path from 'path'
+import { mkdir } from 'fs/promises'
+import multer from 'multer'
+import sharp from 'sharp'
+import { randomUUID } from 'crypto'
 import { getDb } from '../db/mongo.js'
 import { authRequired, allowRoles } from '../middleware/auth.js'
 import { ensureCompAccount, ensureWalletAccount, getSummary, makeId, refreshWorkerAvailabilityByUserId, sanitizeAmount } from '../services/data.js'
@@ -8,6 +13,40 @@ import { nowIso, toNumber, toOptionalNumber } from '../utils/common.js'
 
 const router = express.Router()
 router.use(authRequired)
+
+const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png'])
+const IMAGE_UPLOAD_LIMIT_BYTES = 5 * 1024 * 1024
+const missingImageUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_IMAGE_MIME_TYPES.has(file.mimetype)) return cb(null, true)
+    cb(new Error('Only JPG or PNG images are accepted'))
+  },
+  limits: { fileSize: IMAGE_UPLOAD_LIMIT_BYTES },
+})
+
+const isMultipartRequest = (req) => {
+  const rawType = String(req.headers['content-type'] || '').toLowerCase()
+  return rawType.includes('multipart/form-data')
+}
+
+const acceptMissingImageField = (fieldName) => (req, res, next) => {
+  if (!isMultipartRequest(req)) return next()
+  missingImageUpload.single(fieldName)(req, res, (err) => {
+    if (err) return res.status(400).json({ detail: err.message })
+    next()
+  })
+}
+
+async function saveImageToUploads(buffer, folder = 'missing') {
+  if (!buffer) return null
+  const uploadsDir = path.join(process.cwd(), 'uploads', folder)
+  await mkdir(uploadsDir, { recursive: true })
+  const fileName = `${Date.now()}-${randomUUID()}.webp`
+  const targetPath = path.join(uploadsDir, fileName)
+  await sharp(buffer).rotate().webp({ quality: 80 }).toFile(targetPath)
+  return `/uploads/${folder}/${fileName}`
+}
 
 function ngoCanManageSurvivorRequest(survivor, ngoUserId, ngoIds = []) {
   return (
@@ -554,19 +593,71 @@ router.patch('/donations/:id/mark-distributed', allowRoles('admin', 'ngo', 'work
 })
 
 router.get('/missing-persons', list('missing_persons'))
-router.post('/missing-persons', async (req, res) => {
-  try { const db = getDb(); const b = req.body || {}; const doc = { id: makeId(), name: b.name || 'Unknown', age: b.age ?? null, gender: b.gender || null, last_seen: b.last_seen || null, notes: b.notes || null, reporter_contact: b.reporter_contact || req.user.phone || null, case_status: 'missing', verification_status: 'not_required', found_notes: null, found_reporter_contact: null, created_by_user_id: req.user.id, created_at: nowIso(), updated_at: nowIso() }; await db.collection('missing_persons').insertOne(doc); res.status(201).json(doc) }
-  catch (e) { res.status(500).json({ detail: e.message }) }
-})
+router.post(
+  '/missing-persons',
+  acceptMissingImageField('photo'),
+  async (req, res) => {
+    try {
+      const db = getDb()
+      const b = req.body || {}
+      const age = toOptionalNumber(b.age)
+      const photoUrl = req.file?.buffer ? await saveImageToUploads(req.file.buffer) : null
+      const doc = {
+        id: makeId(),
+        name: b.name || 'Unknown',
+        age,
+        gender: b.gender || null,
+        last_seen: b.last_seen || null,
+        notes: b.notes || null,
+        reporter_contact: b.reporter_contact || req.user.phone || null,
+        photo_url: photoUrl,
+        case_status: 'missing',
+        verification_status: 'not_required',
+        found_notes: null,
+        found_photo_url: null,
+        found_reporter_contact: null,
+        found_reporter_email: null,
+        created_by_user_id: req.user.id,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      }
+      await db.collection('missing_persons').insertOne(doc)
+      res.status(201).json(doc)
+    } catch (e) {
+      res.status(500).json({ detail: e.message })
+    }
+  },
+)
 router.get('/missing-persons/search', async (req, res) => {
   try { const db = getDb(); const q = String(req.query.q || '').trim().toLowerCase(); const all = await db.collection('missing_persons').find({}, { projection: { _id: 0 } }).toArray(); if (!q) return res.json(all); res.json(all.filter((m) => String(m.name || '').toLowerCase().includes(q) || String(m.notes || '').toLowerCase().includes(q) || String(m.case_status || '').toLowerCase().includes(q))) }
   catch (e) { res.status(500).json({ detail: e.message }) }
 })
 router.delete('/missing-persons/:id', async (req, res) => { try { const db = getDb(); await db.collection('missing_persons').deleteOne({ id: req.params.id }); res.status(204).send() } catch (e) { res.status(500).json({ detail: e.message }) } })
-router.patch('/missing-persons/:id/report-found', async (req, res) => {
-  try { const db = getDb(); const b = req.body || {}; await db.collection('missing_persons').updateOne({ id: req.params.id }, { $set: { case_status: 'found_pending_verification', verification_status: 'pending', found_notes: b.found_notes || null, found_reporter_contact: b.found_reporter_contact || null, updated_at: nowIso() } }); const f = await db.collection('missing_persons').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) }
-  catch (e) { res.status(500).json({ detail: e.message }) }
-})
+router.patch(
+  '/missing-persons/:id/report-found',
+  acceptMissingImageField('found_photo'),
+  async (req, res) => {
+    try {
+      const db = getDb()
+      const b = req.body || {}
+      const foundPhotoUrl = req.file?.buffer ? await saveImageToUploads(req.file.buffer) : null
+      const updateFields = {
+        case_status: 'found_pending_verification',
+        verification_status: 'pending',
+        found_notes: b.found_notes || null,
+        found_reporter_contact: b.found_reporter_contact || null,
+        found_reporter_email: b.found_reporter_email || null,
+        updated_at: nowIso(),
+      }
+      if (foundPhotoUrl) updateFields.found_photo_url = foundPhotoUrl
+      await db.collection('missing_persons').updateOne({ id: req.params.id }, { $set: updateFields })
+      const f = await db.collection('missing_persons').findOne({ id: req.params.id }, { projection: { _id: 0 } })
+      res.json(f || {})
+    } catch (e) {
+      res.status(500).json({ detail: e.message })
+    }
+  },
+)
 router.patch('/missing-persons/:id/verify-found', allowRoles('admin', 'ngo'), async (req, res) => {
   try { const db = getDb(); const approve = String(req.body?.decision || '').toLowerCase() === 'approve'; await db.collection('missing_persons').updateOne({ id: req.params.id }, { $set: { case_status: approve ? 'found_verified' : 'missing', verification_status: approve ? 'verified' : 'not_required', updated_at: nowIso() } }); const f = await db.collection('missing_persons').findOne({ id: req.params.id }, { projection: { _id: 0 } }); res.json(f || {}) }
   catch (e) { res.status(500).json({ detail: e.message }) }

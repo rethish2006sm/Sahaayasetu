@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import RoleNav from '../components/RoleNav'
 import VoiceAssistant from '../components/VoiceAssistant'
 import AssistantHub from '../components/AssistantHub'
 import { useAuth } from '../context/AuthContext'
-import { apiRequest } from '../lib/api'
+import { API_BASE, apiRequest } from '../lib/api'
 
 const tabs = [
   { id: 'home', label: 'Home' },
@@ -56,13 +56,17 @@ export default function SurvivorPage() {
     notes: '',
     reporter_contact: '',
   })
+  const [missingPhotoFile, setMissingPhotoFile] = useState(null)
+  const missingPhotoInputRef = useRef(null)
   const [selectedMissing, setSelectedMissing] = useState(null)
   const [foundConfirm, setFoundConfirm] = useState({
     open: false,
     record: null,
     email: '',
     phone: '',
+    photo: null,
   })
+  const foundPhotoInputRef = useRef(null)
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState('')
@@ -289,14 +293,17 @@ export default function SurvivorPage() {
     if (actionLoading) return
     setActionLoading('Submitting report...')
     try {
+      const formData = new FormData()
+      formData.append('name', missingForm.name)
+      if (missingForm.age !== '') formData.append('age', String(Number(missingForm.age)))
+      if (missingForm.last_seen) formData.append('last_seen', missingForm.last_seen)
+      if (missingForm.notes) formData.append('notes', missingForm.notes)
+      if (missingForm.reporter_contact) formData.append('reporter_contact', missingForm.reporter_contact)
+      if (missingPhotoFile) formData.append('photo', missingPhotoFile)
       await apiRequest('/v1/platform/missing-persons', {
         method: 'POST',
         token,
-        body: {
-          ...missingForm,
-          age: missingForm.age ? Number(missingForm.age) : null,
-          report_type: 'missing',
-        },
+        body: formData,
       })
       setMissingForm({
         name: '',
@@ -305,6 +312,8 @@ export default function SurvivorPage() {
         notes: '',
         reporter_contact: '',
       })
+      setMissingPhotoFile(null)
+      if (missingPhotoInputRef.current) missingPhotoInputRef.current.value = ''
       setMissingMsg('Missing person report submitted successfully.')
       const fresh = await apiRequest('/v1/platform/missing-persons', { token })
       setMissing(fresh)
@@ -353,24 +362,26 @@ export default function SurvivorPage() {
     }
   }
 
-  const reportFound = async ({ item, email, phone }) => {
+  const reportFound = async ({ item, email, phone, photo }) => {
     if (actionLoading) return
     setActionLoading('Reporting found status...')
     try {
+      const payload = new FormData()
+      payload.append('found_notes', 'Reported from survivor portal')
+      if (phone) payload.append('found_reporter_contact', phone)
+      if (email) payload.append('found_reporter_email', email)
+      if (photo) payload.append('found_photo', photo)
       await apiRequest(`/v1/platform/missing-persons/${item.id}/report-found`, {
         method: 'PATCH',
         token,
-        body: {
-          found_notes: 'Reported from survivor portal',
-          found_reporter_contact: phone || null,
-          found_reporter_email: email || null,
-        },
+        body: payload,
       })
       setMissingMsg('Found status submitted. Waiting NGO/Admin verification.')
       const fresh = await apiRequest('/v1/platform/missing-persons', { token })
       setMissing(fresh)
       setMissingMatches(fresh.slice(0, 12))
-      setFoundConfirm({ open: false, record: null, email: '', phone: '' })
+      setFoundConfirm({ open: false, record: null, email: '', phone: '', photo: null })
+      if (foundPhotoInputRef.current) foundPhotoInputRef.current.value = ''
     } catch (err) {
       setMissingMsg(err.message)
     } finally {
@@ -379,11 +390,13 @@ export default function SurvivorPage() {
   }
 
   const openFoundConfirm = (item) => {
+    if (foundPhotoInputRef.current) foundPhotoInputRef.current.value = ''
     setFoundConfirm({
       open: true,
       record: item,
       email: '',
       phone: item.reporter_contact || '',
+      photo: null,
     })
   }
 
@@ -396,6 +409,7 @@ export default function SurvivorPage() {
       item: foundConfirm.record,
       email: foundConfirm.email,
       phone: foundConfirm.phone,
+      photo: foundConfirm.photo,
     })
   }
 
@@ -938,44 +952,71 @@ export default function SurvivorPage() {
                 />
                 <button disabled={Boolean(actionLoading)} className="rounded-lg bg-blue-900 text-white px-4 py-2 disabled:opacity-60">{actionLoading ? 'Please wait...' : 'Find'}</button>
               </form>
-              <div className="mt-3 space-y-2 text-sm max-h-52 overflow-auto pr-1">
-                {displayedMissing.map((item) => (
-                  <article
-                    key={item.id}
-                    className="border rounded-lg p-2 bg-slate-50 cursor-pointer hover:border-blue-300"
-                    onClick={() => setSelectedMissing(item)}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="font-semibold">{item.name}</p>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setSelectedMissing(item)
-                          }}
-                          className="rounded border border-blue-300 px-2 py-1 text-xs text-blue-700"
-                        >
-                          View
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            deleteMissingPerson(item.id)
-                          }}
-                          className="rounded border border-red-300 px-2 py-1 text-xs text-red-700"
-                        >
-                          Delete
-                        </button>
+              <div className="mt-3 space-y-3 text-sm max-h-52 overflow-auto pr-1">
+                {displayedMissing.map((item) => {
+                  const photoSrc = item.photo_url ? `${API_BASE}${item.photo_url}` : null
+                  const statusLabel = item.case_status || 'missing'
+                  const verificationLabel = item.verification_status || 'not_required'
+                  return (
+                    <article
+                      key={item.id}
+                      className="border border-slate-200 rounded-2xl bg-white p-3 shadow-sm hover:border-blue-300 hover:shadow-md cursor-pointer transition"
+                      onClick={() => setSelectedMissing(item)}
+                    >
+                      <div className="flex gap-3">
+                        <div className="h-24 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 text-3xl text-slate-400 dark:bg-slate-900">
+                          {photoSrc ? (
+                            <img
+                              src={photoSrc}
+                              alt={`Photo of ${item.name || 'missing person'}`}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center font-semibold uppercase tracking-wider">
+                              {item.name ? item.name.charAt(0) : '?'}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 space-y-1 text-slate-700">
+                          <div className="flex items-start justify-between gap-3">
+                            <p className="text-lg font-semibold text-slate-900">{item.name || 'Unknown'}</p>
+                            <div className="flex flex-wrap gap-1 text-[11px] font-semibold uppercase tracking-wide">
+                              <span className="rounded-full border border-slate-200 px-2 py-0.5 text-slate-500">{statusLabel}</span>
+                              <span className="rounded-full border border-slate-200 px-2 py-0.5 text-slate-500">{verificationLabel}</span>
+                            </div>
+                          </div>
+                          <p className="text-sm text-slate-600">Last seen: <span className="font-semibold text-slate-800">{item.last_seen || 'Not provided'}</span></p>
+                          <p className="text-sm text-slate-600 break-words">Notes: {item.notes || 'None'}</p>
+                        </div>
                       </div>
-                    </div>
-                    <p>Last seen: {item.last_seen || 'Not provided'}</p>
-                    <p>Notes: {item.notes || 'None'}</p>
-                    <p>Status: {item.case_status || 'missing'}</p>
-                    <p>Verification: {item.verification_status || 'not_required'}</p>
-                  </article>
-                ))}
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                        <p>Reporter: {item.reporter_contact || 'Unknown'}</p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setSelectedMissing(item)
+                            }}
+                            className="rounded border border-blue-300 px-2 py-1 text-xs text-blue-700"
+                          >
+                            View
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              deleteMissingPerson(item.id)
+                            }}
+                            className="rounded border border-red-300 px-2 py-1 text-xs text-red-700"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  )
+                })}
                 {displayedMissing.length === 0 ? <p className="text-slate-500">No missing person records found.</p> : null}
               </div>
             </article>
@@ -1020,6 +1061,20 @@ export default function SurvivorPage() {
                   value={missingForm.reporter_contact}
                   onChange={(e) => setMissingForm((p) => ({ ...p, reporter_contact: e.target.value }))}
                 />
+                <div className="space-y-1 text-xs text-slate-600">
+                  <label className="font-semibold text-slate-600">Missing person photo (jpg/png)</label>
+                  <input
+                    ref={missingPhotoInputRef}
+                    type="file"
+                    accept=".jpg,.jpeg,.png"
+                    onChange={(e) => {
+                      const next = e.target.files?.[0] || null
+                      setMissingPhotoFile(next)
+                    }}
+                    className="w-full border rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-[10px] text-slate-400">Upload a clear portrait; the backend converts images to webp/avif before storing.</p>
+                </div>
                 <button disabled={Boolean(actionLoading)} className="w-full rounded-lg bg-orange-500 text-white px-4 py-2 disabled:opacity-60">
                   {actionLoading ? 'Please wait...' : 'Submit Report'}
                 </button>
@@ -1156,29 +1211,56 @@ export default function SurvivorPage() {
                   Close
                 </button>
               </div>
-              <div className="mt-3 space-y-2 text-sm text-slate-700">
-                <p><span className="font-semibold">Name:</span> {selectedMissing.name || '-'}</p>
-                <p><span className="font-semibold">Age:</span> {selectedMissing.age ?? '-'}</p>
-                <p><span className="font-semibold">Last Seen:</span> {selectedMissing.last_seen || '-'}</p>
-                <p><span className="font-semibold">Reporter Contact:</span> {selectedMissing.reporter_contact || '-'}</p>
+              <div className="mt-3 space-y-4 text-sm text-slate-700">
+                <div className="flex gap-4">
+                  <div className="h-28 w-28 flex-shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 text-4xl text-slate-400">
+                    {selectedMissing.photo_url ? (
+                      <img
+                        src={`${API_BASE}${selectedMissing.photo_url}`}
+                        alt={`Photo of ${selectedMissing.name || 'missing person'}`}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center font-semibold uppercase tracking-wider">
+                        {selectedMissing.name ? selectedMissing.name.charAt(0) : '?'}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 space-y-1">
+                    <p className="text-lg font-semibold text-slate-900">{selectedMissing.name || 'Unknown'}</p>
+                    <p><span className="font-semibold">Age:</span> {selectedMissing.age ?? '-'}</p>
+                    <p><span className="font-semibold">Last Seen:</span> {selectedMissing.last_seen || '-'}</p>
+                    <p><span className="font-semibold">Reporter Contact:</span> {selectedMissing.reporter_contact || '-'}</p>
+                    <p><span className="font-semibold">Case Status:</span> {selectedMissing.case_status || 'missing'}</p>
+                    <p><span className="font-semibold">Verification:</span> {selectedMissing.verification_status || 'not_required'}</p>
+                  </div>
+                </div>
                 <p><span className="font-semibold">Notes:</span> {selectedMissing.notes || '-'}</p>
-                <p><span className="font-semibold">Case Status:</span> {selectedMissing.case_status || 'missing'}</p>
-                <p><span className="font-semibold">Verification:</span> {selectedMissing.verification_status || 'not_required'}</p>
                 <p><span className="font-semibold">Found Notes:</span> {selectedMissing.found_notes || '-'}</p>
                 <p><span className="font-semibold">Finder Contact:</span> {selectedMissing.found_reporter_contact || '-'}</p>
                 <p><span className="font-semibold">Finder Email:</span> {selectedMissing.found_reporter_email || '-'}</p>
                 <p><span className="font-semibold">Record ID:</span> {selectedMissing.id || '-'}</p>
                 <p><span className="font-semibold">Created At:</span> {selectedMissing.created_at || '-'}</p>
-                <div className="pt-1">
-                  <button
-                    type="button"
-                    onClick={() => openFoundConfirm(selectedMissing)}
-                    disabled={Boolean(actionLoading) || selectedMissing.case_status === 'found_verified' || selectedMissing.case_status === 'found_pending_verification'}
-                    className="rounded border border-emerald-300 px-3 py-1.5 text-xs text-emerald-700 disabled:opacity-60"
-                  >
-                    Mark As Found (Send for NGO/Admin Verification)
-                  </button>
-                </div>
+                {selectedMissing.found_photo_url ? (
+                  <div className="space-y-2">
+                    <p className="font-semibold text-sm text-slate-700">Finder photo</p>
+                    <img
+                      src={`${API_BASE}${selectedMissing.found_photo_url}`}
+                      alt={`Finder photo for ${selectedMissing.name || 'missing'}`}
+                      className="h-40 w-full rounded-2xl border border-slate-200 object-cover"
+                    />
+                  </div>
+                ) : null}
+              </div>
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => openFoundConfirm(selectedMissing)}
+                  disabled={Boolean(actionLoading) || selectedMissing.case_status === 'found_verified' || selectedMissing.case_status === 'found_pending_verification'}
+                  className="rounded border border-emerald-300 px-3 py-1.5 text-xs text-emerald-700 disabled:opacity-60"
+                >
+                  Mark As Found (Send for NGO/Admin Verification)
+                </button>
               </div>
             </article>
           </section>
@@ -1190,7 +1272,10 @@ export default function SurvivorPage() {
                 <h4 className="text-lg font-bold text-blue-900">Found Confirmation</h4>
                 <button
                   type="button"
-                  onClick={() => setFoundConfirm({ open: false, record: null, email: '', phone: '' })}
+                  onClick={() => {
+                    if (foundPhotoInputRef.current) foundPhotoInputRef.current.value = ''
+                    setFoundConfirm({ open: false, record: null, email: '', phone: '', photo: null })
+                  }}
                   className="rounded border px-3 py-1 text-sm"
                 >
                   Close
@@ -1213,6 +1298,20 @@ export default function SurvivorPage() {
                   onChange={(e) => setFoundConfirm((p) => ({ ...p, phone: e.target.value }))}
                   required
                 />
+                <div className="space-y-1 text-xs text-slate-600">
+                  <label className="font-semibold text-slate-600">Finder photo (jpg/png)</label>
+                  <input
+                    ref={foundPhotoInputRef}
+                    type="file"
+                    accept=".jpg,.jpeg,.png"
+                    onChange={(e) => {
+                      const next = e.target.files?.[0] || null
+                      setFoundConfirm((p) => ({ ...p, photo: next }))
+                    }}
+                    className="w-full border rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-[10px] text-slate-400">Upload a clear photo so NGOs can check both faces before verification.</p>
+                </div>
                 <button className="w-full rounded-lg bg-emerald-700 text-white px-4 py-2">
                   Continue (2-Step Confirm)
                 </button>

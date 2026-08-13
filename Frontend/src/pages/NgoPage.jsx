@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import RoleNav from '../components/RoleNav'
 import NgoResourceControl from '../components/NgoResourceControl'
 import { useAuth } from '../context/AuthContext'
-import { apiRequest } from '../lib/api'
+import { API_BASE, apiRequest } from '../lib/api'
 
 const tabs = [
   ['inventory', 'Resource Ops'],
@@ -33,7 +33,6 @@ export default function NgoPage() {
   const [missing, setMissing] = useState([])
   const [missingMatches, setMissingMatches] = useState([])
   const [ngos, setNgos] = useState([])
-  const [shelters, setShelters] = useState([])
   const [q, setQ] = useState('')
   const [workerQuery, setWorkerQuery] = useState('')
   const [workerStatusFilter, setWorkerStatusFilter] = useState('all')
@@ -45,19 +44,21 @@ export default function NgoPage() {
   const [rescueStatusFilter, setRescueStatusFilter] = useState('all')
   const [rescueMedicalFilter, setRescueMedicalFilter] = useState('all')
   const [rescueUrgencyFilter, setRescueUrgencyFilter] = useState('all')
-  const [alertsView, setAlertsView] = useState('targeted')
   const [alertQuery, setAlertQuery] = useState('')
   const [alertSeverityFilter, setAlertSeverityFilter] = useState('all')
   const [alertChannelFilter, setAlertChannelFilter] = useState('all')
   const [showAlertCreateModal, setShowAlertCreateModal] = useState(false)
-  const [shelterQuery, setShelterQuery] = useState('')
-  const [shelterTypeFilter, setShelterTypeFilter] = useState('all')
-  const [shelterAvailabilityFilter, setShelterAvailabilityFilter] = useState('all')
-  const [showShelterCreateModal, setShowShelterCreateModal] = useState(false)
-  const [shelterDeltaDrafts, setShelterDeltaDrafts] = useState({})
   const [showTaskCreateModal, setShowTaskCreateModal] = useState(false)
   const [showCompletedTasksModal, setShowCompletedTasksModal] = useState(false)
   const [selectedMissing, setSelectedMissing] = useState(null)
+  const [foundModal, setFoundModal] = useState({
+    open: false,
+    record: null,
+    contact: '',
+    email: '',
+    photo: null,
+  })
+  const foundPhotoInputRef = useRef(null)
   const [selectedWorkerId, setSelectedWorkerId] = useState('')
   const [survivorAssignDrafts, setSurvivorAssignDrafts] = useState({})
   const [ngoFormDirty, setNgoFormDirty] = useState(false)
@@ -118,14 +119,6 @@ export default function NgoPage() {
     specialization: '',
     lat: '',
     lon: '',
-  })
-  const [shelterForm, setShelterForm] = useState({
-    name: '',
-    location: '',
-    contact: '',
-    shelter_type: '',
-    capacity: 100,
-    occupied: 0,
   })
 
   const handleSectionFetch = async (name, fn) => {
@@ -190,23 +183,6 @@ export default function NgoPage() {
     setNgos(data || [])
   }
 
-  const fetchShelters = async () => {
-    const data = await apiRequest('/v1/platform/shelters', { token })
-    const normalized = (data || []).map((item) => {
-      const capacity = Number(item.capacity || 0)
-      const occupied = Number(item.occupancy ?? item.occupied ?? 0)
-      return {
-        ...item,
-        occupied,
-        available: Math.max(capacity - occupied, 0),
-        location: item.location_text || item.location || 'Not provided',
-        contact: item.contact_phone || item.contact || 'Not provided',
-        shelter_type: item.shelter_type || item.type || 'General',
-      }
-    })
-    setShelters(normalized)
-  }
-
   const fetchWallet = async () => {
     const data = await apiRequest('/v1/platform/wallet/me', { token })
     setWalletMe(data?.account || null)
@@ -245,7 +221,6 @@ export default function NgoPage() {
       handleSectionFetch('survivors', fetchSurvivors),
       handleSectionFetch('missing', fetchMissing),
       handleSectionFetch('ngos', fetchNgos),
-      handleSectionFetch('shelters', fetchShelters),
       handleSectionFetch('wallet', fetchWallet),
       handleSectionFetch('wallet_directory', fetchWalletDirectory),
       handleSectionFetch('wallet_transactions', fetchWalletTransfers),
@@ -376,24 +351,6 @@ export default function NgoPage() {
   }
 
 
-  const updateShelterOccupancy = async (shelterId, payload, okMessage) => {
-    if (actionLoading) return
-    setActionLoading('Updating occupancy...')
-    try {
-      await apiRequest(`/v1/platform/shelters/${shelterId}/occupancy`, {
-        method: 'PATCH',
-        token,
-        body: payload,
-      })
-      setMsg(okMessage)
-      await loadData()
-    } catch (err) {
-      setMsg(err.message)
-    } finally {
-      setActionLoading('')
-    }
-  }
-
   const assignWorkerToSurvivor = async (survivorId) => {
     if (actionLoading) return
     const assigned_worker_id = survivorAssignDrafts[survivorId] || null
@@ -449,22 +406,41 @@ export default function NgoPage() {
     }
   }
 
-  const reportFoundFromNgo = async (item) => {
-    if (actionLoading) return
-    const contact = window.prompt('Enter finder contact number/details for verification:', item.reporter_contact || '')
-    if (contact === null) return
+  const openNgoFoundModal = (item) => {
+    if (foundPhotoInputRef.current) foundPhotoInputRef.current.value = ''
+    setFoundModal({
+      open: true,
+      record: item,
+      contact: item.reporter_contact || '',
+      email: '',
+      photo: null,
+    })
+  }
+
+  const closeNgoFoundModal = () => {
+    if (foundPhotoInputRef.current) foundPhotoInputRef.current.value = ''
+    setFoundModal({ open: false, record: null, contact: '', email: '', photo: null })
+  }
+
+  const submitNgoFoundReport = async (e) => {
+    e.preventDefault()
+    if (actionLoading || !foundModal.record) return
+    if (!window.confirm('Mark this person as found and send details to admin for verification?')) return
     setActionLoading('Reporting found status...')
     try {
-      await apiRequest(`/v1/platform/missing-persons/${item.id}/report-found`, {
+      const payload = new FormData()
+      payload.append('found_notes', 'Reported from NGO portal')
+      if (foundModal.contact) payload.append('found_reporter_contact', foundModal.contact)
+      if (foundModal.email) payload.append('found_reporter_email', foundModal.email)
+      if (foundModal.photo) payload.append('found_photo', foundModal.photo)
+      await apiRequest(`/v1/platform/missing-persons/${foundModal.record.id}/report-found`, {
         method: 'PATCH',
         token,
-        body: {
-          found_notes: 'Reported from NGO portal',
-          found_reporter_contact: contact || null,
-        },
+        body: payload,
       })
       setMsg('Found status submitted. Awaiting NGO/Admin verification.')
       await loadData()
+      closeNgoFoundModal()
     } catch (err) {
       setMsg(err.message)
     } finally {
@@ -743,23 +719,6 @@ export default function NgoPage() {
       )
     })
   }, [alerts, alertQuery, alertSeverityFilter, alertChannelFilter])
-  const filteredShelters = useMemo(() => {
-    const query = shelterQuery.trim().toLowerCase()
-    return shelters.filter((s) => {
-      const type = String(s.shelter_type || '').toLowerCase()
-      const available = Number(s.available ?? Math.max((Number(s.capacity || 0) - Number(s.occupied || 0)), 0))
-      if (shelterTypeFilter !== 'all' && type !== shelterTypeFilter) return false
-      if (shelterAvailabilityFilter === 'available_only' && available <= 0) return false
-      if (shelterAvailabilityFilter === 'full_only' && available > 0) return false
-      if (!query) return true
-      return (
-        String(s.name || '').toLowerCase().includes(query) ||
-        String(s.location || '').toLowerCase().includes(query) ||
-        String(s.contact || '').toLowerCase().includes(query) ||
-        type.includes(query)
-      )
-    })
-  }, [shelters, shelterQuery, shelterTypeFilter, shelterAvailabilityFilter])
   const workerTaskSummaryByWorkerId = useMemo(() => {
     const matchesWorker = (worker, task) => {
       const keys = [worker.id, worker.linked_user_id].filter(Boolean)
@@ -1324,38 +1283,78 @@ export default function NgoPage() {
             <input className="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="Search by name/notes" value={q} onChange={(e) => setQ(e.target.value)} />
             <button className="rounded-lg border px-4 py-2 text-sm">Search</button>
           </form>
-          <div className="mt-3 space-y-2 text-sm max-h-72 overflow-auto">
-            {(q ? missingMatches : missing).map((m) => (
-              <div key={m.id} className="rounded border bg-white p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedMissing(m)}
-                    className="text-left font-semibold text-blue-900 hover:underline"
-                  >
-                    {m.name} - {m.last_seen || 'Unknown'}
-                  </button>
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={() => setSelectedMissing(m)} className="rounded border border-blue-300 px-2 py-1 text-xs text-blue-700">View</button>
-                    <button type="button" onClick={() => remove(`/v1/platform/missing-persons/${m.id}`, 'Missing person record deleted successfully.')} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700">Delete</button>
+          <div className="mt-3 space-y-3 text-sm max-h-72 overflow-auto">
+            {(q ? missingMatches : missing).map((m) => {
+              const photoSrc = m.photo_url ? `${API_BASE}${m.photo_url}` : null
+              const foundPhotoSrc = m.found_photo_url ? `${API_BASE}${m.found_photo_url}` : null
+              const createdLabel = m.created_at ? new Date(m.created_at).toLocaleString() : '-'
+              const statusLabel = m.case_status || 'missing'
+              const verificationLabel = m.verification_status || 'not_required'
+              return (
+                <article key={m.id} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm hover:border-blue-300 hover:shadow-md transition">
+                  <div className="flex gap-3">
+                    <div className="h-20 w-20 flex-shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 text-3xl text-slate-400">
+                      {photoSrc ? (
+                        <img src={photoSrc} alt={`Photo of ${m.name || 'missing person'}`} className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center font-semibold uppercase tracking-wider">
+                          {m.name ? m.name.charAt(0) : '?'}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 space-y-1 text-slate-700">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-lg font-semibold text-slate-900">{m.name || 'Unknown'}</p>
+                          <p className="text-xs text-slate-600">{m.last_seen || 'Last seen unknown'}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-1 text-[11px] font-semibold uppercase tracking-wide">
+                          <span className="rounded-full border border-slate-200 px-2 py-0.5 text-slate-500">{statusLabel}</span>
+                          <span className="rounded-full border border-slate-200 px-2 py-0.5 text-slate-500">{verificationLabel}</span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-600">{m.notes || 'No notes provided.'}</p>
+                      <p className="text-xs text-slate-600">Reporter contact: {m.reporter_contact || '-'}</p>
+                      <div className="flex flex-wrap gap-1">
+                        {foundPhotoSrc ? (
+                          <span className="rounded-full border border-emerald-300 px-2 py-0.5 text-emerald-700">Finder photo added</span>
+                        ) : null}
+                        <span className="rounded-full border border-slate-200 px-2 py-0.5 text-slate-500">Reported by: {m.created_by_role || '-'}</span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <p className="mt-1 text-slate-600">{m.notes || 'No notes provided.'}</p>
-                <p className="mt-1 text-xs text-slate-600">Case status: {m.case_status || 'missing'}</p>
-                <p className="text-xs text-slate-600">Verification: {m.verification_status || 'not_required'}</p>
-                <p className="text-xs text-slate-600">Reported by: {m.found_reported_by_role || '-'}</p>
-                <p className="text-xs text-slate-600">Finder contact: {m.found_reporter_contact || '-'}</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => reportFoundFromNgo(m)}
-                    disabled={m.case_status === 'found_verified' || m.case_status === 'found_pending_verification'}
-                    className="rounded border border-emerald-300 px-2 py-1 text-xs text-emerald-700 disabled:opacity-60"
-                  >
-                    Report Found
-                  </button>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      <span>Record: {m.id}</span>
+                      <span>Created: {createdLabel}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMissing(m)}
+                        className="rounded border border-blue-300 px-2 py-1 text-xs text-blue-700"
+                      >
+                        View
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => remove(`/v1/platform/missing-persons/${m.id}`, 'Missing person record deleted successfully.')}
+                        className="rounded border border-red-300 px-2 py-1 text-xs text-red-700"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openNgoFoundModal(m)}
+                        disabled={m.case_status === 'found_verified' || m.case_status === 'found_pending_verification'}
+                        className="rounded border border-emerald-300 px-2 py-1 text-xs text-emerald-700 disabled:opacity-60"
+                      >
+                        Report Found
+                      </button>
+                    </div>
+                  </div>
                   {m.case_status === 'found_pending_verification' ? (
-                    <>
+                    <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
                         onClick={() => verifyFoundReport(m.id, 'approve')}
@@ -1370,189 +1369,75 @@ export default function NgoPage() {
                       >
                         Reject Verification
                       </button>
-                    </>
+                    </div>
                   ) : null}
-                </div>
-              </div>
-            ))}
+                </article>
+              )
+            })}
             {(q ? missingMatches : missing).length === 0 ? <p className="text-slate-500">No records found.</p> : null}
           </div>
         </section> : null}
 
         {tab === 'alerts' ? (
           <section className="mt-4 bg-white rounded-xl border p-4 shadow-sm">
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setAlertsView('targeted')}
-                className={`rounded-lg px-3 py-2 text-sm ${alertsView === 'targeted' ? 'bg-orange-500 text-white' : 'bg-blue-900 text-white'}`}
-              >
-                Targeted Alerts
-              </button>
-              <button
-                type="button"
-                onClick={() => setAlertsView('shelters')}
-                className={`rounded-lg px-3 py-2 text-sm ${alertsView === 'shelters' ? 'bg-orange-500 text-white' : 'bg-blue-900 text-white'}`}
-              >
-                Shelter Management
-              </button>
-            </div>
-
-            {alertsView === 'targeted' ? (
-              <article className="mt-4 rounded-xl border p-4 shadow-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="font-bold text-blue-900">Targeted Alerts</h2>
-                  <button
-                    type="button"
-                    onClick={() => setShowAlertCreateModal(true)}
-                    className="rounded-lg bg-blue-900 px-4 py-2 text-sm text-white"
-                  >
-                    Create Alert
-                  </button>
-                </div>
-                <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
-                  <input
-                    className="rounded-lg border px-3 py-2 md:col-span-2"
-                    placeholder="Search by title, message, location..."
-                    value={alertQuery}
-                    onChange={(e) => setAlertQuery(e.target.value)}
-                  />
-                  <select className="rounded-lg border px-3 py-2" value={alertSeverityFilter} onChange={(e) => setAlertSeverityFilter(e.target.value)}>
-                    <option value="all">All Severity</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="critical">Critical</option>
-                  </select>
-                  <select className="rounded-lg border px-3 py-2" value={alertChannelFilter} onChange={(e) => setAlertChannelFilter(e.target.value)}>
-                    <option value="all">All Channels</option>
-                    <option value="web">Web</option>
-                    <option value="sms">SMS</option>
-                    <option value="voice">Voice</option>
-                    <option value="push">Push</option>
-                  </select>
-                </div>
-                <div className="mt-3 rounded border bg-slate-50 p-2 text-sm">
-                  <p className="font-semibold">Alert Feed ({filteredAlerts.length})</p>
-                  <div className="mt-2 max-h-72 space-y-2 overflow-auto">
-                    {filteredAlerts.map((a) => (
-                      <article key={a.id} className="rounded border bg-white p-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="font-semibold text-slate-900">{a.title}</p>
-                          <div className="flex items-center gap-2">
-                            <span className="rounded-full border bg-slate-50 px-2 py-1 text-xs">{a.severity || 'medium'} / {a.channel || 'web'}</span>
-                            <button
-                              onClick={() => remove(`/v1/platform/alerts/${a.id}`, 'Alert deleted successfully.')}
-                              className="rounded border border-red-300 px-2 py-1 text-xs text-red-700"
-                            >
-                              Delete
-                            </button>
-                          </div>
+            <article className="mt-4 rounded-xl border p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="font-bold text-blue-900">Targeted Alerts</h2>
+                <button
+                  type="button"
+                  onClick={() => setShowAlertCreateModal(true)}
+                  className="rounded-lg bg-blue-900 px-4 py-2 text-sm text-white"
+                >
+                  Create Alert
+                </button>
+              </div>
+              <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
+                <input
+                  className="rounded-lg border px-3 py-2 md:col-span-2"
+                  placeholder="Search by title, message, location..."
+                  value={alertQuery}
+                  onChange={(e) => setAlertQuery(e.target.value)}
+                />
+                <select className="rounded-lg border px-3 py-2" value={alertSeverityFilter} onChange={(e) => setAlertSeverityFilter(e.target.value)}>
+                  <option value="all">All Severity</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select>
+                <select className="rounded-lg border px-3 py-2" value={alertChannelFilter} onChange={(e) => setAlertChannelFilter(e.target.value)}>
+                  <option value="all">All Channels</option>
+                  <option value="web">Web</option>
+                  <option value="sms">SMS</option>
+                  <option value="voice">Voice</option>
+                  <option value="push">Push</option>
+                </select>
+              </div>
+              <div className="mt-3 rounded border bg-slate-50 p-2 text-sm">
+                <p className="font-semibold">Alert Feed ({filteredAlerts.length})</p>
+                <div className="mt-2 max-h-72 space-y-2 overflow-auto">
+                  {filteredAlerts.map((a) => (
+                    <article key={a.id} className="rounded border bg-white p-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-semibold text-slate-900">{a.title}</p>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full border bg-slate-50 px-2 py-1 text-xs">{a.severity || 'medium'} / {a.channel || 'web'}</span>
+                          <button
+                            onClick={() => remove(`/v1/platform/alerts/${a.id}`, 'Alert deleted successfully.')}
+                            className="rounded border border-red-300 px-2 py-1 text-xs text-red-700"
+                          >
+                            Delete
+                          </button>
                         </div>
-                        <p className="mt-1 text-xs text-slate-700">{a.message || '-'}</p>
-                        <p className="mt-1 text-xs text-slate-600"><span className="font-semibold">Target:</span> {a.target_location || '-'}</p>
-                      </article>
-                    ))}
-                    {filteredAlerts.length === 0 ? <p className="text-slate-500">No alerts match this filter.</p> : null}
-                  </div>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-700">{a.message || '-'}</p>
+                      <p className="mt-1 text-xs text-slate-600"><span className="font-semibold">Target:</span> {a.target_location || '-'}</p>
+                    </article>
+                  ))}
+                  {filteredAlerts.length === 0 ? <p className="text-slate-500">No alerts match this filter.</p> : null}
                 </div>
-              </article>
-            ) : null}
-
-            {alertsView === 'shelters' ? (
-              <article className="mt-4 rounded-xl border p-4 shadow-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="font-bold text-blue-900">Shelter Management</h2>
-                  <button
-                    type="button"
-                    onClick={() => setShowShelterCreateModal(true)}
-                    className="rounded-lg bg-emerald-700 px-4 py-2 text-sm text-white"
-                  >
-                    Create Shelter
-                  </button>
-                </div>
-                <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
-                  <input
-                    className="rounded-lg border px-3 py-2 md:col-span-2"
-                    placeholder="Search by shelter name, location, contact..."
-                    value={shelterQuery}
-                    onChange={(e) => setShelterQuery(e.target.value)}
-                  />
-                  <select className="rounded-lg border px-3 py-2" value={shelterTypeFilter} onChange={(e) => setShelterTypeFilter(e.target.value)}>
-                    <option value="all">All Types</option>
-                    <option value="school">School</option>
-                    <option value="community hall">Community Hall</option>
-                    <option value="camp">Camp</option>
-                  </select>
-                  <select className="rounded-lg border px-3 py-2" value={shelterAvailabilityFilter} onChange={(e) => setShelterAvailabilityFilter(e.target.value)}>
-                    <option value="all">All Availability</option>
-                    <option value="available_only">Available Only</option>
-                    <option value="full_only">Full Only</option>
-                  </select>
-                </div>
-                <div className="mt-3 rounded border bg-slate-50 p-2 text-sm">
-                  <p className="font-semibold">Shelter List ({filteredShelters.length})</p>
-                  <div className="mt-2 max-h-80 space-y-2 overflow-auto">
-                    {filteredShelters.map((s) => {
-                      const draft = String(shelterDeltaDrafts[s.id] ?? '1')
-                      const delta = Math.max(1, Number(draft || 1))
-                      return (
-                        <article key={s.id} className="rounded border bg-white p-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="font-semibold">{s.name}</p>
-                            <button onClick={() => remove(`/v1/platform/shelters/${s.id}`, 'Shelter deleted successfully.')} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700">Delete</button>
-                          </div>
-                          <p className="mt-1 text-xs text-slate-600">
-                            Occupied: {s.occupied} / {s.capacity} | Available: {s.available ?? Math.max((s.capacity || 0) - (s.occupied || 0), 0)}
-                          </p>
-                          <p className="text-xs text-slate-600">Location: {s.location || '-'}</p>
-                          <p className="text-xs text-slate-600">Contact: {s.contact || '-'}</p>
-                          <p className="text-xs text-slate-600">Type: {s.shelter_type || '-'}</p>
-                          <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                            <input
-                              className="rounded border px-2 py-1 text-xs"
-                              type="number"
-                              min="1"
-                              value={draft}
-                              onChange={(e) => setShelterDeltaDrafts((prev) => ({ ...prev, [s.id]: e.target.value }))}
-                              placeholder="Number"
-                            />
-                            <button
-                              onClick={() => updateShelterOccupancy(s.id, { occupied_delta: delta }, `Shelter occupancy increased by ${delta}.`)}
-                              className="rounded border px-2 py-1 text-xs"
-                            >
-                              Increase By Number
-                            </button>
-                            <button
-                              onClick={() => updateShelterOccupancy(s.id, { occupied_delta: -delta }, `Shelter occupancy decreased by ${delta}.`)}
-                              className="rounded border px-2 py-1 text-xs"
-                            >
-                              Decrease By Number
-                            </button>
-                          </div>
-                          <div className="mt-2 flex gap-2">
-                            <button
-                              onClick={() => updateShelterOccupancy(s.id, { occupied: Number(s.capacity || 0) }, 'Shelter set to full.')}
-                              className="rounded border border-amber-300 px-2 py-1 text-xs text-amber-700"
-                            >
-                              Set Full
-                            </button>
-                            <button
-                              onClick={() => updateShelterOccupancy(s.id, { occupied: 0 }, 'Shelter set to empty.')}
-                              className="rounded border border-blue-300 px-2 py-1 text-xs text-blue-700"
-                            >
-                              Set Empty
-                            </button>
-                          </div>
-                        </article>
-                      )
-                    })}
-                    {filteredShelters.length === 0 ? <p className="text-slate-500">No shelters match this filter.</p> : null}
-                  </div>
-                </div>
-              </article>
-            ) : null}
-
+              </div>
+            </article>
           </section>
         ) : null}
 
@@ -1579,19 +1464,88 @@ export default function NgoPage() {
                   Close
                 </button>
               </div>
-              <div className="mt-3 space-y-2 text-sm text-slate-700">
-                <p><span className="font-semibold">Name:</span> {selectedMissing.name || '-'}</p>
-                <p><span className="font-semibold">Age:</span> {selectedMissing.age ?? '-'}</p>
-                <p><span className="font-semibold">Last Seen:</span> {selectedMissing.last_seen || '-'}</p>
-                <p><span className="font-semibold">Reporter Contact:</span> {selectedMissing.reporter_contact || '-'}</p>
+              <div className="mt-3 space-y-4 text-sm text-slate-700">
+                <div className="flex gap-4">
+                  <div className="h-28 w-28 flex-shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 text-4xl text-slate-400">
+                    {selectedMissing.photo_url ? (
+                      <img
+                        src={`${API_BASE}${selectedMissing.photo_url}`}
+                        alt={`Photo of ${selectedMissing.name || 'missing person'}`}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center font-semibold uppercase tracking-wider">
+                        {selectedMissing.name ? selectedMissing.name.charAt(0) : '?'}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 space-y-1">
+                    <p className="text-lg font-semibold text-slate-900">{selectedMissing.name || 'Unknown'}</p>
+                    <p><span className="font-semibold">Age:</span> {selectedMissing.age ?? '-'}</p>
+                    <p><span className="font-semibold">Last Seen:</span> {selectedMissing.last_seen || '-'}</p>
+                    <p><span className="font-semibold">Reporter Contact:</span> {selectedMissing.reporter_contact || '-'}</p>
+                    <p><span className="font-semibold">Case Status:</span> {selectedMissing.case_status || 'missing'}</p>
+                    <p><span className="font-semibold">Verification:</span> {selectedMissing.verification_status || 'not_required'}</p>
+                  </div>
+                </div>
                 <p><span className="font-semibold">Notes:</span> {selectedMissing.notes || '-'}</p>
-                <p><span className="font-semibold">Case Status:</span> {selectedMissing.case_status || 'missing'}</p>
-                <p><span className="font-semibold">Verification:</span> {selectedMissing.verification_status || 'not_required'}</p>
                 <p><span className="font-semibold">Found Notes:</span> {selectedMissing.found_notes || '-'}</p>
                 <p><span className="font-semibold">Finder Contact:</span> {selectedMissing.found_reporter_contact || '-'}</p>
                 <p><span className="font-semibold">Record ID:</span> {selectedMissing.id || '-'}</p>
                 <p><span className="font-semibold">Created At:</span> {selectedMissing.created_at || '-'}</p>
+                {selectedMissing.found_photo_url ? (
+                  <div className="space-y-2">
+                    <p className="font-semibold text-sm text-slate-700">Finder photo</p>
+                    <img
+                      src={`${API_BASE}${selectedMissing.found_photo_url}`}
+                      alt={`Finder photo for ${selectedMissing.name || 'missing'}`}
+                      className="h-40 w-full rounded-2xl border border-slate-200 object-cover"
+                    />
+                  </div>
+                ) : null}
               </div>
+            </article>
+          </section>
+        ) : null}
+        {foundModal.open ? (
+          <section className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/60 p-4 pt-32">
+            <article className="w-full max-w-sm max-h-[calc(100vh-9rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-2xl break-words">
+              <div className="flex items-start justify-between gap-3">
+                <h4 className="text-lg font-bold text-blue-900">Report Missing Person Found</h4>
+                <button type="button" onClick={closeNgoFoundModal} className="rounded border px-3 py-1 text-sm">Close</button>
+              </div>
+              <p className="mt-2 text-sm text-slate-600">Provide finder details and (optionally) a photo for NGO/Admin verification.</p>
+              <form onSubmit={submitNgoFoundReport} className="mt-3 space-y-2 text-sm">
+                <input
+                  className="w-full border rounded-lg px-3 py-2"
+                  placeholder="Finder contact (required)"
+                  value={foundModal.contact}
+                  onChange={(e) => setFoundModal((p) => ({ ...p, contact: e.target.value }))}
+                  required
+                />
+                <input
+                  className="w-full border rounded-lg px-3 py-2"
+                  type="email"
+                  placeholder="Finder email (optional)"
+                  value={foundModal.email}
+                  onChange={(e) => setFoundModal((p) => ({ ...p, email: e.target.value }))}
+                />
+                <div className="space-y-1 text-xs text-slate-600">
+                  <label className="font-semibold text-slate-600">Finder photo (jpg/png)</label>
+                  <input
+                    ref={foundPhotoInputRef}
+                    type="file"
+                    accept=".jpg,.jpeg,.png"
+                    onChange={(e) => {
+                      const next = e.target.files?.[0] || null
+                      setFoundModal((p) => ({ ...p, photo: next }))
+                    }}
+                    className="w-full border rounded-lg px-3 py-2 text-sm"
+                  />
+                  <p className="text-[10px] text-slate-400">Upload a clear photo so NGOs can cross-check faces.</p>
+                </div>
+                <button className="w-full rounded-lg bg-emerald-700 text-white px-4 py-2">Submit Found Report</button>
+              </form>
             </article>
           </section>
         ) : null}
@@ -1668,43 +1622,6 @@ export default function NgoPage() {
                 <input className="w-full border rounded-lg px-3 py-2" placeholder="Target location" value={alertForm.target_location} onChange={(e) => setAlertForm((p) => ({ ...p, target_location: e.target.value }))} />
                 <input className="w-full border rounded-lg px-3 py-2" type="number" min="1" max="500" placeholder="Radius KM" value={alertForm.radius_km} onChange={(e) => setAlertForm((p) => ({ ...p, radius_km: e.target.value }))} />
                 <button disabled={Boolean(actionLoading)} className="w-full rounded-lg bg-blue-900 text-white px-4 py-2 disabled:opacity-60">{actionLoading ? 'Please wait...' : 'Broadcast'}</button>
-              </form>
-            </article>
-          </section>
-        ) : null}
-        {showShelterCreateModal ? (
-          <section className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/60 p-4 pt-32">
-            <article className="w-full max-w-md max-h-[calc(100vh-9rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-2xl break-words">
-              <div className="flex items-start justify-between gap-3">
-                <h4 className="text-lg font-bold text-blue-900">Create Shelter</h4>
-                <button
-                  type="button"
-                  onClick={() => setShowShelterCreateModal(false)}
-                  className="rounded border px-3 py-1 text-sm"
-                >
-                  Close
-                </button>
-              </div>
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault()
-                  const ok = await submit('/v1/platform/shelters', { ...shelterForm, capacity: Number(shelterForm.capacity), occupied: Number(shelterForm.occupied) }, 'Shelter added successfully.')
-                  if (ok) {
-                    setShelterForm({ name: '', location: '', contact: '', shelter_type: '', capacity: 100, occupied: 0 })
-                    setShowShelterCreateModal(false)
-                  }
-                }}
-                className="mt-3 space-y-2 text-sm"
-              >
-                <input className="w-full border rounded-lg px-3 py-2" placeholder="Shelter name" value={shelterForm.name} onChange={(e) => setShelterForm((p) => ({ ...p, name: e.target.value }))} required />
-                <input className="w-full border rounded-lg px-3 py-2" placeholder="Location / Address" value={shelterForm.location} onChange={(e) => setShelterForm((p) => ({ ...p, location: e.target.value }))} required />
-                <input className="w-full border rounded-lg px-3 py-2" placeholder="Contact phone" value={shelterForm.contact} onChange={(e) => setShelterForm((p) => ({ ...p, contact: e.target.value }))} />
-                <input className="w-full border rounded-lg px-3 py-2" placeholder="Shelter type (school, hall, camp)" value={shelterForm.shelter_type} onChange={(e) => setShelterForm((p) => ({ ...p, shelter_type: e.target.value }))} />
-                <div className="grid grid-cols-2 gap-2">
-                  <input className="border rounded-lg px-3 py-2" type="number" min="1" placeholder="Capacity" value={shelterForm.capacity} onChange={(e) => setShelterForm((p) => ({ ...p, capacity: e.target.value }))} required />
-                  <input className="border rounded-lg px-3 py-2" type="number" min="0" placeholder="Occupied" value={shelterForm.occupied} onChange={(e) => setShelterForm((p) => ({ ...p, occupied: e.target.value }))} required />
-                </div>
-                <button disabled={Boolean(actionLoading)} className="w-full rounded-lg bg-emerald-700 text-white px-4 py-2 disabled:opacity-60">{actionLoading ? 'Please wait...' : 'Add Shelter'}</button>
               </form>
             </article>
           </section>

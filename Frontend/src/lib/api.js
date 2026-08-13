@@ -34,7 +34,8 @@ function parseErrorDetail(detail, fallbackStatus) {
 export async function apiRequest(path, { method = 'GET', token, body } = {}) {
   const normalizedMethod = String(method || 'GET').toUpperCase()
   const isMutation = normalizedMethod !== 'GET'
-  const mutationKey = isMutation
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
+  const mutationKey = isMutation && !isFormData
     ? `${normalizedMethod}:${path}:${body ? JSON.stringify(body) : ''}`
     : null
 
@@ -44,7 +45,7 @@ export async function apiRequest(path, { method = 'GET', token, body } = {}) {
 
   const headers = {}
   if (token) headers.Authorization = `Bearer ${token}`
-  if (body) headers['Content-Type'] = 'application/json'
+  if (body && !isFormData) headers['Content-Type'] = 'application/json'
 
   const requestPromise = (async () => {
     let res
@@ -52,7 +53,7 @@ export async function apiRequest(path, { method = 'GET', token, body } = {}) {
       res = await fetch(`${API_BASE}${path}`, {
         method: normalizedMethod,
         headers,
-        body: body ? JSON.stringify(body) : undefined,
+        body: isFormData ? body : body ? JSON.stringify(body) : undefined,
       })
     } catch (err) {
       throw new Error(
